@@ -80,5 +80,3 @@ def example():
 	mask[-25:, -25:] = True
 
 	uncertainty_plot(Z, poisson, mask, extent = bounds, save = True, barlabel = 'label', title = 'Title')
-
-example()
