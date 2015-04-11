@@ -1,3 +1,17 @@
+'''
+This makes visualizing errors in 2D data (like spatially-resolved 
+	emission-line strengths and other IFU data) easier to do.
+
+The new class `uncertainty_im()` just animates imshow such that values with 
+	more uncertainty flicker randomly
+'''
+
+'''
+Written by Zach Pace, U Wisconsin Dept. of Astronomy
+zpace@astro.wisc.edu
+Apr 2015
+'''
+
 class uncertainty_im(object):
 	'''
 	a fancier version of imshow()
