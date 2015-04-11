@@ -1,4 +1,4 @@
-class uncertainty_plot(object):
+class uncertainty_im(object):
 	'''
 	a fancier version of imshow()
 
@@ -15,7 +15,7 @@ class uncertainty_plot(object):
 		- n: integer, essentially the number of pages in the flipbook
 		- **kwargs: passed to imshow, like `cmap` and bad data values
 	'''
-	def __init__(self, data, err, mask, n = 100, title = None, **kwargs):
+	def __init__(self, data, err, mask, n = 100, title = None, save = False, **kwargs):
 
 		import numpy as np
 		import matplotlib.pyplot as plt
@@ -59,12 +59,13 @@ class uncertainty_plot(object):
 
 		anim = animation.FuncAnimation(fig, animate, init_func = init, frames = n,
 			interval = 200, blit = True)
-
 		plt.show()
+		if save == True: anim.save('animation.gif', writer = 'imagemagick', fps = 5)
 
 def example():
 	import numpy as np
 	import matplotlib.mlab as mlab
+	import matplotlib.pyplot as plt
 
 	bounds = [-3., 3., -2., 2.]
 
@@ -78,4 +79,6 @@ def example():
 	mask = np.zeros(Z.shape)
 	mask[-25:, -25:] = True
 
-	uncertainty_plot(Z, poisson, mask, extent = bounds, barlabel = 'label', title = 'Title')
+	uncertainty_plot(Z, poisson, mask, extent = bounds, save = True, barlabel = 'label', title = 'Title')
+
+example()
