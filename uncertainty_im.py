@@ -93,4 +93,4 @@ def example():
 	mask = np.zeros(Z.shape)
 	mask[-25:, -25:] = True
 
-	uncertainty_plot(Z, poisson, mask, extent = bounds, save = True, barlabel = 'label', title = 'Title')
+	uncertainty_im(Z, poisson, mask, extent = bounds, save = True, barlabel = 'label', title = 'Title')
