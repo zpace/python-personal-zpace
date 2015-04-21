@@ -58,6 +58,9 @@ def circles(x, y, s, c='b', ax=None, vmin=None, vmax=None, **kwargs):
         color = None  # use cmap, norm after collection is created
     kwargs.update(color=color)
 
+    if 'edgecolor' not in kwargs: kwargs.update(edgecolor = 'k')
+    #print kwargs
+
     if isinstance(x, (int, long, float)):
         patches = [Circle((x, y), s),]
     elif isinstance(s, (int, long, float)):
@@ -73,3 +76,36 @@ def circles(x, y, s, c='b', ax=None, vmin=None, vmax=None, **kwargs):
 
     ax.add_collection(collection)
     return collection
+
+def spspk_overlay(ctr = [0., 0.], angle = 0., **kwargs):
+    '''
+    overlay a SparsePak-shaped pattern on a figure (usually an image)
+
+    wraps around `circles` (above)
+
+    You can manipulate the bundle center and the angle of the bundle (wrt vertical)
+    by setting ctr and CCW angle (in radians) nonzero.
+    '''
+
+    import matplotlib.pyplot as plt
+    import astropy.io.ascii as ascii
+    import numpy as np
+
+    #start out by reading in spspk fiber data, ordered by fiber data row
+    #fiber data row is just a 0-indexed list that doesn't include sky fibers
+    #so fibers are numbered 0-74 rather than 1-82
+    
+    fibers = ascii.read('fiberdata.dat')
+    fibers.sort('row')
+
+    coords = np.column_stack((fibers['ra'], fibers['dec']))
+    print coords
+
+    rot_matrix = np.array( [ [np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)] ])
+    coords = np.dot(coords, rot_matrix.T)
+    fibers['ra'] = coords[:, 0]
+    fibers['dec'] = coords[:, 1]
+
+    circles(ctr[0] + fibers['ra'], ctr[1] + fibers['dec'], 2.5, **kwargs)
+    plt.xlim([-40., 40])
+    plt.ylim([-40., 40])
