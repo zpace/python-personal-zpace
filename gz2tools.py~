@@ -17,11 +17,8 @@ def download_sloan_im(ra, dec, scale, width = 256, height = 256):
 	im = urllib.urlopen(im_url)
 	image_file = io.BytesIO(im.read())
 	img = mpimg.imread(image_file, format = 'jpg')
-	return img
-
-def example():
-	import numpy as np
-	import matplotlib.pyplot as plt	
-	img = download_sloan_im(197.61446, 18.43817 , 0.02 * 18.23)
 	plt.imshow(img, extent = [-width*scale/2., width*scale/2., -height*scale/2., height*scale/2.])
 	plt.show()
+
+def example():
+	download_sloan_im(197.61446, 18.43817 , 0.02 * 18.23)

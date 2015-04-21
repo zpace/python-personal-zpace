@@ -107,5 +107,3 @@ def spspk_overlay(ctr = [0., 0.], angle = 0., **kwargs):
     fibers['dec'] = coords[:, 1]
 
     circles(ctr[0] + fibers['ra'], ctr[1] + fibers['dec'], 2.5, **kwargs)
-    plt.xlim([-40., 40])
-    plt.ylim([-40., 40])
