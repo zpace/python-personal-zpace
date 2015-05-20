@@ -219,6 +219,7 @@ def rejection_sample_2d(x, y, z, nper = 100):
 
     #normalize
     z /= z.sum()
+    #print z.shape
     mc = r.random(z.shape + (nper,))
     selected = mc < z[:,:,np.newaxis]
     number = selected.sum(axis = -1)
