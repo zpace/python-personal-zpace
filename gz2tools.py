@@ -1,13 +1,15 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+import urllib
+import io
+from scipy.misc import imsave
+
 def download_sloan_im(ra, dec, scale, width = 256, height = 256):
     '''
     ra & dec: sky coords
     scale: pixel scale (in arcsec) of image (.02 * rPetro is recommended)
     '''
-    import numpy as np
-    import matplotlib.pyplot as plt
-    import matplotlib.image as mpimg
-    import urllib
-    import io
 
     plt.ioff()
 
@@ -20,8 +22,6 @@ def download_sloan_im(ra, dec, scale, width = 256, height = 256):
     return img
 
 def example():
-    import numpy as np
-    import matplotlib.pyplot as plt
     ra = 197.61446
     dec = 18.43817
     scale = 0.02 * 18.23
@@ -29,3 +29,16 @@ def example():
     img = download_sloan_im(ra, dec, scale, width, height)
     plt.imshow(img, extent = [-width*scale/2., width*scale/2., -height*scale/2., height*scale/2.])
     plt.show()
+
+def save_sloan(ra, dec, scale, width = 256, height = 256, imname = None,
+               ext = 'jpg'):
+    '''
+    save an SDSS thumbnail as an image file
+    '''
+
+    if imname == None:
+        #if there's no name specified, just use the RA and Dec
+        imname = str(ra) + '_' + str(dec)
+
+    img = download_sloan_im(ra, dec, scale, width, height)
+    imsave(imname + '.' + ext, img)
