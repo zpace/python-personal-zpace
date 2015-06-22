@@ -1,3 +1,16 @@
+import numpy as np
+import numpy.random as r
+from matplotlib.patches import Circle
+from matplotlib.collections import PatchCollection
+import matplotlib.pyplot as plt
+#import matplotlib.colors as colors
+import astropy.io.ascii as ascii
+import numpy as np
+from numpy.random import choice
+from sklearn.neighbors import KernelDensity
+from sklearn.decomposition import PCA
+from sklearn.grid_search import GridSearchCV
+
 def circles(x, y, s, c='b', ax=None, vmin=None, vmax=None, **kwargs):
     """
     Make a scatter of circles plot of x vs y, where x and y are sequence 
@@ -40,10 +53,6 @@ def circles(x, y, s, c='b', ax=None, vmin=None, vmax=None, **kwargs):
     Credit: StackOverflow user Sub Struct
         (http://stackoverflow.com/questions/9081553/python-scatter-plot-size-and-style-of-the-marker/24567352#24567352)
     '''
-    from matplotlib.patches import Circle
-    from matplotlib.collections import PatchCollection
-    import pylab as plt
-    #import matplotlib.colors as colors
 
     if ax is None:
         ax = plt.gca()    
@@ -80,10 +89,6 @@ def spspk_overlay(fibers = None, ctr = [0., 0.], angle = 0., which = 'science', 
     You can manipulate the bundle center and the angle of the bundle (wrt vertical)
     by setting ctr and CCW angle (in radians) nonzero.
     '''
-
-    import matplotlib.pyplot as plt
-    import astropy.io.ascii as ascii
-    import numpy as np
 
     plt.ioff()
 
@@ -123,8 +128,6 @@ def spspk_overlay(fibers = None, ctr = [0., 0.], angle = 0., which = 'science', 
     plt.axis('equal')
 
 def gaussian(x, m = 0., s = 1.):
-    import numpy as np
-
     return 1. / (s * np.sqrt(2.* np.pi)) * np.exp( -0.5*((x - m)/s)**2. )
 
 def kde_errors(x, bandwidth, objname, e = None, cv = 3, offset = 0.):
@@ -133,14 +136,6 @@ def kde_errors(x, bandwidth, objname, e = None, cv = 3, offset = 0.):
     measurement errors can be added as necessary.
     If none are added, then this reduces to a KDE function with built-in cross-validation
     '''
-
-    import numpy as np
-    from numpy.random import choice
-    import matplotlib.pyplot as plt
-
-    from sklearn.neighbors import KernelDensity
-    from sklearn.decomposition import PCA
-    from sklearn.grid_search import GridSearchCV
 
     xoffset = x + offset
 
@@ -207,9 +202,6 @@ def rejection_sample_2d(x, y, z, nper = 100):
     sample `nper` times from each bin of 2D PDF `z`
     '''
 
-    import numpy as np
-    import numpy.random as r
-
     #normalize
     z /= z.sum()
     #print z.shape
@@ -225,3 +217,28 @@ def rejection_sample_2d(x, y, z, nper = 100):
     #both of these are the same
     sample = np.repeat(coords.reshape(-1, 2), number.ravel(), axis = 0)
     return sample
+
+def find_linefit_CI(mb, best, xr, a, plot = False):
+    '''
+    find the credible interval of a MC line fit
+
+    Arguments:
+     - mb: array(-like) of fit instances (col for m, col for b)
+     - best: best-fit (in form [mbest, bbest])
+     - xr: x-range of fit (in form [xllim, xulim])
+     - a: "alpha" (e.g., .05 for 95%)
+     - plot: bool
+    '''
+    x = np.linspace(xr[0], xr[1], 100)
+
+    # first create an array with each row being an instance of the fit
+    nfits = np.array([m*x + b for m, b in mb])
+    #now compute the x-point-wise
+    CI_n = np.percentile(nfits, q = [100.*a/2., 100.*(1 - a/2.)], axis = 0)
+
+    if plot == True:
+        plt.fill_between(x, y1 = CI_n[0], y2 = CI_n[1], 
+            color = 'grey', zorder = 0, alpha = .5)
+        plt.plot(x, best[0]*x + best[1], c = 'r', lw = 2, zorder = 1)
+        
+    return x, CI_n
