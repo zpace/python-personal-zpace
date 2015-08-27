@@ -24,8 +24,8 @@ class gp_kriging_fits(object):
                  thetaU=10., thetaL=1e-1, regr='linear', **gpparams):
         # first read in fiberfits table
         fiberfits_raw = table.Table.read(fiberfits_path, format='ascii')
-        fiberfits = fiberfits_raw[(np.isnan(fiberfits_raw['V']) == False) *
-                                  (np.abs(fiberfits_raw['V']) < 1000.)]
+        fiberfits = fiberfits_raw[(np.isnan(fiberfits_raw['V']) == False)]  # *
+        #                          (np.abs(fiberfits_raw['V']) < 1000.)]
 
         self.objname = objname
         self.ra = fiberfits['ra']
@@ -42,33 +42,42 @@ class gp_kriging_fits(object):
                 {'repr': r'$V$', 'qstr': 'V', 'u': 'km/s', 'err': 'dV',
                  'shift': True, 'extend': 'both',
                  'cmparams': {'cmap': 'RdBu_r',
-                              'vmin': -600., 'vmax': 600.}},
+                              'vmin': -600., 'vmax': 600.},
+                 'fmt': '%.0f'},
             'Velocity Dispersion':
                 {'repr': r'$\sigma$', 'qstr': 'sigma', 'u': 'km/s',
                  'err': 'dsigma', 'shift': False,
                  'extend': 'max',
                  'cmparams': {'cmap': 'cubehelix_r',
-                              'vmin': 0., 'vmax': 300.}},
+                              'vmin': 0., 'vmax': 300.},
+                 'fmt': '%.0f'},
             'Stellar Metallicity':
                 {'repr': r'$Z$', 'qstr': 'Z', 'u': 'M/H',
                  'err': None, 'shift': False,
                  'extend': 'max',
                  'cmparams': {'cmap': 'cubehelix_r',
-                              'vmin': -1., 'vmax': 0.5}},
+                              'vmin': -1., 'vmax': 0.5},
+                 'fmt': '%.2f'},
             'Stellar Age':
                 {'repr': r'$\tau$', 'qstr': 't', 'u': 'Gyr', 'err': None,
                  'shift': False, 'extend': 'none',
                  'cmparams': {'cmap': 'cubehelix_r',
-                              'vmin': 0., 'vmax': 13.6}}
+                              'vmin': 0., 'vmax': 13.6},
+                 'fmt': '%.0f'}
         }
 
         self.coords = np.column_stack((self.ra, self.dec))
         self.q0 = fiberfits[self.qtys[qty]['qstr']].ravel()
-        self.q0_err = fiberfits[self.qtys[qty]['err']].ravel()
+        if self.qtys[qty]['err'] != None:
+            self.q0_err = fiberfits[self.qtys[self.qty]['err']].ravel()
+            self.nugget0 = (self.q0_err/self.q0)**2.
+        else:
+            self.q0_err = None
+            self.nugget0 = 2.2204460492503131e-15
+
+        gpparams['nugget'] = self.nugget0
 
         # set up an initial fit to find the zeropoint
-        self.nugget0 = (self.q0_err/self.q0)**2.
-        gpparams['nugget'] = self.nugget0
         self.gp0 = gaussian_process.GaussianProcess(**gpparams)
         self.gp0.fit(self.coords, self.q0)
         q_ctr, q_ctr_err2 = self.gp0.predict([[0., 0.]], eval_MSE=True)
@@ -79,7 +88,11 @@ class gp_kriging_fits(object):
             print 'Shifting... V_ctr = {0[0]:.0f} +/- {1[0]:.0f} km/s'.format(
                 q_ctr, np.sqrt(q_ctr_err2))
             self.q1 = self.q0 - q_ctr[0]
-            self.nugget1 = (np.sqrt(self.q0_err**2. + q_ctr_err2)/self.q1)**2.
+            if fself.qtys[qty]['err'] != None:
+                self.nugget1 = (np.sqrt(self.q0_err**2. +
+                                        q_ctr_err2)/self.q1)**2.
+            else:
+                self.nugget1 = self.nugget0
             # q_ctr_err2 *is* squared, so don't square it again!
         else:
             self.q1 = self.q0
@@ -109,7 +122,8 @@ class gp_kriging_fits(object):
         fig, ax1 = plt.subplots(1, 1, figsize=(6.5, 4.5))
 
         cmparams = self.qtys[self.qty]['cmparams']
-        cmparams['levels'] = np.linspace(-600., 600., 13)
+        cmparams['levels'] = np.linspace(
+            cmparams['vmin'], cmparams['vmax'], 13)
         extent = [ragrid.min(), ragrid.max(),
                   decgrid.min(), decgrid.max()]
 
@@ -127,7 +141,7 @@ class gp_kriging_fits(object):
                 mpl.font_manager.FontProperties(size='small'))
         # otherwise, just use an image of the object
         else:
-            im = mpimg.imread(objname + '.png')
+            im = mpl.image.imread(self.objname + '.png')
             x = y = np.linspace(-40., 40., np.shape(im)[0])
             X, Y = np.meshgrid(x, y)
             galim = ax1.imshow(
@@ -136,7 +150,7 @@ class gp_kriging_fits(object):
 
         CS = ax1.contour(ragrid, decgrid,
                          self.y_pred.reshape((1000, 1000)), **cmparams)
-        ax1.clabel(CS, fontsize='small', fmt='%.0f')
+        ax1.clabel(CS, fontsize='small', fmt=self.qtys[self.qty]['fmt'])
         ax1.set_aspect('equal')
 
         ax1.set_title('{}: {} fit'.format(self.objname, self.qty))
