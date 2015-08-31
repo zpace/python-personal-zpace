@@ -280,7 +280,8 @@ class lin_fit_ol(object):
             observed=True, value=yi)
 
         self.M = dict(y_outlier=y_outlier, beta=beta, model=model,
-                      qi=qi, Pb=Pb, Yb=Yb, log_sigmab=log_sigmab, sigmab=sigmab)
+                      qi=qi, Pb=Pb, Yb=Yb, log_sigmab=log_sigmab,
+                      sigmab=sigmab)
 
         self.sample_invoked = False
 
