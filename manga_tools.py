@@ -8,6 +8,7 @@ import re
 from matplotlib import rcParams, pyplot as plt
 from astropy.wcs import WCS
 from astropy import units as u, constants as c
+from glob import glob
 
 drpall_loc = '/home/zpace/Documents/MaNGA_science/'
 pw_loc = drpall_loc + '.saspwd'
@@ -132,7 +133,7 @@ def make_ifu_fig(hdu):
     return fig
 
 
-def conroy_to_fits(fname):
+def conroy_to_table(fname):
     '''
     translate a Conroy-style SSP (at one metallicity)
         to a bunch of fits tables
@@ -149,24 +150,36 @@ def conroy_to_fits(fname):
 
     data = []
 
+    Z = None
+
     with open(fname) as f:
         for i, l in enumerate(f):
-            if l[0] == '#':
+            if (l[0] == '#') and (i != 0):
                 pass
+            elif i == 0:
+                for t in l.split():
+                    try:
+                        Z = float(t)
+                        break
+                    except ValueError:
+                        pass
             else:
                 data.append(
                     [float(j) for j in l.rstrip('\n').lstrip(' ').split()])
 
+    if Z is None:
+        print 'NO METALLICITY PARSED for file \n{}'.format(fname)
+
     nT, nL = data.pop(0)  # number of age bins and number of wavelengths
     nT, nL = int(nT), int(nL)
-    l = table.Column(data=data.pop(0) * u.Angstrom,
+    l = table.Column(data=data.pop(0) * u.AA,
                      name='lambda')  # wavelengths
 
     assert len(l) == nL, 'There should be {} elements in nL, \
         but there are {}'.format(len(l), len(nL))
 
     # now restrict the wavelength range to a usable interval
-    lgood = ((1500. * u.Angstrom <= l) * (l <= 1.1 * u.micron))
+    lgood = ((1500. * u.AA <= l) * (l <= 1.1 * u.micron))
     l = l[lgood]
 
     # log-transform
@@ -178,28 +191,123 @@ def conroy_to_fits(fname):
     NAXIS1 = len(logl)
     # print CRVAL1, CDELT1, NAXIS1
 
-    spectra_flam = data[1::2] * u.solLum/u.Hz  # spectra are every second row
+    # spectra are every second row
+    spectra_fnu = data[1::2] * u.solLum/u.Hz
+    # use only good wavelength range
+    spectra_fnu = [row[lgood] for row in spectra_fnu]
     metadata = data[::2]
 
-    print len(metadata)
-
-    age = table.Column([10.**i[0] for i in metadata] * u.year,
+    age = table.Column([10.**i[0] / 10**9 for i in metadata] * u.Gyr,
                        name='age')
     mass = table.Column([10.**i[1] for i in metadata] * u.solMass,
-                        name='mass')
+                        name='orig SSP mass')
     lbol = table.Column([10.**i[2] for i in metadata] * u.solLum,
                         name='lbol')
     SFR = table.Column([10.**i[3] for i in metadata] * u.solMass/u.year,
                        name='SFR')
 
-    # now convert to f_lambda
-    spectra_fnu = [np.asarray(s[lgood] * (c.c/l**2.)) for s in spectra_flam]
-
-    print spectra_fnu
-
-    return table.Table(data=[age, mass, lbol, SFR])
-
     '''
-    These spectra are in units of Lsun/Hz.
-    We want them in
+    # this is how you convert one row of spectra_fnu into f_lambda units
+    f_nu = spectra_fnu[0]
+    f_lambda = (f_nu/u.cm**2.).to(
+        u.erg/u.s/u.cm**2./u.AA,
+        equivalencies=u.spectral_density(l)) * u.cm**2.
     '''
+
+    # do the same thing as above, except normalize by SSP mass
+    spectra_fl_m = \
+        [(f_nu/u.cm**2.).to(
+            u.erg/u.s/u.cm**2./u.AA,
+            equivalencies=u.spectral_density(l)) * u.cm**2. / (m*u.solMass)
+         for f_nu, m in zip(spectra_fnu, mass)]
+
+    SSPs = table.Table(data=[age, mass, lbol, SFR])
+    SSPs.add_column(table.Column(np.ones_like(np.asarray(SFR)) * u.solMass,
+                                 name='new SSP mass'))  # all 1
+    SSPs.add_column(table.Column(data=spectra_fl_m * spectra_fl_m[0].unit,
+                                 name='spectrum'))
+    SSPs.add_column(table.Column(data=Z * np.ones_like(np.asarray(SFR)),
+                                 name='Z'))
+
+    return SSPs, l
+
+
+def make_conroy_file(loc, plot=False):
+    fnames = glob(loc + '*.out.spec')
+
+    print '{} metallicities spotted'.format(len(fnames))
+
+    SSPs = table.vstack([conroy_to_table(f)[0]
+                         for f in fnames])
+    print 'SSPs read'
+
+    SSPs.sort(['age', 'Z'])
+
+    Ts = np.unique(SSPs['age'])
+    Ts.sort()
+    Zs = np.unique(SSPs['Z'])
+    Zs.sort()
+    # retrieve the array of wavelengths by calling
+    # conroy_to_table one last time
+    Ls = conroy_to_table(fnames[0])[1]
+
+    nT, nZ, nL = len(Ts), len(Zs), len(Ls)
+
+    if plot == True:
+        plt.close('all')
+
+        fig = plt.figure()
+        ax1 = fig.add_subplot(131)
+        ax2 = fig.add_subplot(132)
+        ax3 = fig.add_subplot(133)
+
+        ax1.semilogy(Ts)
+        ax2.plot(Zs)
+        ax3.semilogy(Ls)
+        plt.tight_layout()
+        plt.show()
+
+    # initialize an array of dimension [nT, nZ, nL]
+    SSPs_cube = np.empty([nT, nZ, nL])
+
+    # T, Z, and L are evenly spaced in log (Z is already there)
+
+    logT = np.log(Ts)
+    logL = np.log(Ls)
+
+    # set up header keywords to make reading in & writing out easier
+
+    NAXIS = 3
+
+    # define all the header keywords you'll need for the fits file
+
+    h = {'CTYPE1': 'log age/Gyr',
+         'CRVAL1': np.min(logT),
+         'NAXIS1': nT,
+         'CDELT1': np.abs(np.mean(logT[:-1] - logT[1:])),
+         'CTYPE2': 'log Z/Zsol',
+         'CRVAL2': np.min(Zs),
+         'NAXIS2': nZ,
+         'CDELT2': np.abs(np.mean(Zs[:-1] - Zs[1:])),
+         'CTYPE3': 'log lambda/AA',
+         'CRVAL3': np.min(logL),
+         'NAXIS3': nL,
+         'CDELT3': np.abs(np.mean(logL[:-1] - logL[1:])),
+         'BUNIT': SSPs['spectrum'].unit.to_string()}
+
+    for i in range(len(logT)):  # iterate over ages
+        for j in range(len(Zs)):  # iterate over metallicities
+            # print 'Z = {}, T = {}'.format(Zs[j], Ts[i])
+            Zcond = (SSPs['Z'] == Zs[j])
+            Tcond = (SSPs['age'] == Ts[i])
+            spectrum = SSPs[Zcond * Tcond]['spectrum']
+            SSPs_cube[i, j, :] = spectrum
+
+    print 'SSP cube constructed'
+    hdu = fits.PrimaryHDU([SSPs_cube])
+    for key, value in zip(h.keys(), h.values()):
+        hdu.header[key] = value
+    hdu.writeto('conroy_SSPs.fits', clobber=True)
+    print 'FITS file written'
+
+    return SSPs
