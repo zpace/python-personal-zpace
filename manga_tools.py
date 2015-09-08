@@ -95,7 +95,7 @@ def get_whole_plate(version, plate, dest, **kwargs):
         get_datacube(version, plate, bundle, dest, **kwargs)
 
 
-def res_over_plate(version, plate='7443'):
+def res_over_plate(version, plate='7443', plot=False, **kwargs):
     '''
     get average resolution vs logL over all IFUs on a single plate
     '''
@@ -107,9 +107,27 @@ def res_over_plate(version, plate='7443'):
 
     # load in each file, get hdu#5 data, and average across bundles
     specres = np.array(
-        [fits.open(f)['SPECRES'].data for f in fl]).mean(axis=0)
+        [fits.open(f)['SPECRES'].data for f in fl])
 
-    return specres
+    p = np.percentile(specres, [14, 50, 86], axis=0)
+
+    if plot == True:
+        plt.close('all')
+        fig = plt.figure(figsize=(8, 6))
+        ax = fig.add_subplot(111)
+        # print p.shape
+        ax.plot(p[1], color='b', linewidth=3, label=r'50$^{th}$ \%-ile')
+        ax.fill_between(np.arange(len(p[0])), p[0], p[2],
+                        color='purple', alpha=0.5, linestyle='--',
+                        label=r'14$^{th}$ & 86$^{th}$ \%-ile')
+        for i in specres:
+            ax.plot(i, color='r', alpha=0.1, zorder=5)
+        ax.set_xlabel('position in wavelength array')
+        ax.set_ylabel('Spectral resolution')
+        plt.tight_layout()
+        plt.show()
+
+    return p[1]  # return 50th percentile (median)
 
 
 def get_RSS(version, plate, bundle, dest, **kwargs):
