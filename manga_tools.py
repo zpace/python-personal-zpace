@@ -72,6 +72,29 @@ def get_datacube(version, plate, bundle, dest, **kwargs):
     get_something(version, what, dest, **kwargs)
 
 
+def get_whole_plate(version, plate, dest, **kwargs):
+    '''
+    get all MaNGA science datacubes from a certain plate
+    '''
+
+    # check if correct version of drpall exists. if not, get it
+    if not os.path.isfile(
+        '{0}drpall-{1}.fits'.format(
+            drpall_loc, MPL_versions[version])):
+
+        get_drpall(version)
+
+    # now open drpall and see what IFUs are used
+
+    drpall = table.Table.read(
+        '{0}drpall-{1}.fits'.format(drpall_loc, MPL_versions[version]))
+
+    drpall = drpall[drpall['plate'].astype(str) == plate]
+
+    for plate, bundle in zip(drpall['plate'], drpall['ifudsgn']):
+        get_datacube(version, plate, bundle, dest, **kwargs)
+
+
 def get_RSS(version, plate, bundle, dest, **kwargs):
     '''
     retrieve a full, log-rebinned datacube of a particular galaxy
@@ -215,11 +238,10 @@ def conroy_to_table(fname):
     '''
 
     # do the same thing as above, except normalize by SSP mass
-    spectra_fl_m = \
-        [(f_nu/u.cm**2.).to(
-            u.erg/u.s/u.cm**2./u.AA,
-            equivalencies=u.spectral_density(l)) * u.cm**2. / (m*u.solMass)
-         for f_nu, m in zip(spectra_fnu, mass)]
+    spectra_fl_m = [(f_nu/u.cm**2.).to(
+        u.erg/u.s/u.cm**2./u.AA,
+        equivalencies=u.spectral_density(l)) * u.cm**2. / (m*u.solMass)
+        for f_nu, m in zip(spectra_fnu, mass)]
 
     SSPs = table.Table(data=[age, mass, lbol, SFR])
     SSPs.add_column(table.Column(np.ones_like(np.asarray(SFR)) * u.solMass,
@@ -293,7 +315,10 @@ def make_conroy_file(loc, plot=False):
          'CRVAL3': np.min(logL),
          'NAXIS3': nL,
          'CDELT3': np.abs(np.mean(logL[:-1] - logL[1:])),
-         'BUNIT': SSPs['spectrum'].unit.to_string()}
+         'BUNIT': SSPs['spectrum'].unit.to_string(),
+         'NAXIS': NAXIS}
+
+    print h
 
     for i in range(len(logT)):  # iterate over ages
         for j in range(len(Zs)):  # iterate over metallicities
@@ -304,10 +329,12 @@ def make_conroy_file(loc, plot=False):
             SSPs_cube[i, j, :] = spectrum
 
     print 'SSP cube constructed'
-    hdu = fits.PrimaryHDU([SSPs_cube])
+    hdu = fits.PrimaryHDU(SSPs_cube)
     for key, value in zip(h.keys(), h.values()):
         hdu.header[key] = value
+    hdu.header['NAXIS1'], hdu.header[
+        'NAXIS2'], hdu.header['NAXIS3'] = nT, nZ, nL
     hdu.writeto('conroy_SSPs.fits', clobber=True)
     print 'FITS file written'
 
-    return SSPs
+    return SSPs, SSPs_cube
