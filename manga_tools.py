@@ -95,6 +95,23 @@ def get_whole_plate(version, plate, dest, **kwargs):
         get_datacube(version, plate, bundle, dest, **kwargs)
 
 
+def res_over_plate(version, plate='7443'):
+    '''
+    get average resolution vs logL over all IFUs on a single plate
+    '''
+
+    # double-check that everything on a plate is downloaded
+    get_whole_plate(version, plate, dest='.', **kwargs)
+
+    fl = glob('manga-{}-*-LOGCUBE.fits.gz'.format(plate))
+
+    # load in each file, get hdu#5 data, and average across bundles
+    specres = np.array(
+        [fits.open(f)['SPECRES'].data for f in fl]).mean(axis=0)
+
+    return specres
+
+
 def get_RSS(version, plate, bundle, dest, **kwargs):
     '''
     retrieve a full, log-rebinned datacube of a particular galaxy
