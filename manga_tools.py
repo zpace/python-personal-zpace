@@ -53,8 +53,13 @@ def get_something(version, what, dest='.', verbose=False):
 
     full_url = v_url + '/' + what
 
-    rsync_cmd = 'rsync -avz --password-file {0} rsync://sdss@{1} {2}'.format(
-        pw_loc, full_url, dest)
+    if verbose == True:
+        v = 'v'
+    else:
+        v = ''
+
+    rsync_cmd = 'rsync -a{3}z --password-file {0} rsync://sdss@{1} {2}'.format(
+        pw_loc, full_url, dest, v)
 
     if verbose == True:
         print 'Here\'s what\'s being run...\n\n{0}\n'.format(rsync_cmd)
@@ -90,9 +95,14 @@ def get_whole_plate(version, plate, dest, **kwargs):
         '{0}drpall-{1}.fits'.format(drpall_loc, MPL_versions[version]))
 
     drpall = drpall[drpall['plate'].astype(str) == plate]
+    drpall = drpall[drpall['ifudsgn'].astype(int) not in
+                    [701, 702, 703, 704, 705, 706,
+                     707, 708, 709, 710, 711, 712]]
 
     for plate, bundle in zip(drpall['plate'], drpall['ifudsgn']):
-        get_datacube(version, plate, bundle, dest, **kwargs)
+        if not os.path.isfile(
+                'manga-{0}-{1}-LOGCUBE.fits.gz'.format(plate, bundle)):
+            get_datacube(version, plate, bundle, dest, **kwargs)
 
 
 def res_over_plate(version, plate='7443', plot=False, **kwargs):
@@ -106,33 +116,54 @@ def res_over_plate(version, plate='7443', plot=False, **kwargs):
     fl = glob('manga-{}-*-LOGCUBE.fits.gz'.format(plate))
 
     # load in each file, get hdu#5 data, and average across bundles
+    print 'READING IN HDU LIST...'
     specres = np.array(
         [fits.open(f)['SPECRES'].data for f in fl])
 
+    l = np.array([wave(fits.open(f)).data for f in fl])
+    lp = np.percentile(l, 50, axis=0)
+
     p = np.percentile(specres, [14, 50, 86], axis=0)
+
+    if plot == True:
+        print 'PLOTTING...'
+        plt.close('all')
+        fig = plt.figure(figsize=(8, 6))
+        ax = fig.add_subplot(111)
+        # print p.shape
+        ax.plot(lp, p[1], color='b', linewidth=3, label=r'50$^{th}$ \%-ile')
+        ax.fill_between(lp, p[0], p[2],
+                        color='purple', alpha=0.5, linestyle='--',
+                        label=r'14$^{th}$ & 86$^{th}$ \%-ile')
+        for i in specres:
+            ax.plot(lp, i, color='r', alpha=0.1, zorder=5)
+        ax.set_xlabel(r'$\lambda~[\AA]$')
+        ax.set_ylabel('Spectral resolution')
+        ax.set_ylim([0., ax.get_ylim()[1]])
+        ax.legend(loc='best')
+        plt.tight_layout()
+        plt.show()
+
+    # calculate average percent variation
+    specres_var = np.abs(specres - p[1]) / specres
+    print 'Average % variability of SPECRES: {0:.5f}'.format(
+        specres_var.mean())
 
     if plot == True:
         plt.close('all')
         fig = plt.figure(figsize=(8, 6))
         ax = fig.add_subplot(111)
-        # print p.shape
-        ax.plot(p[1], color='b', linewidth=3, label=r'50$^{th}$ \%-ile')
-        ax.fill_between(np.arange(len(p[0])), p[0], p[2],
-                        color='purple', alpha=0.5, linestyle='--',
-                        label=r'14$^{th}$ & 86$^{th}$ \%-ile')
-        for i in specres:
-            ax.plot(i, color='r', alpha=0.1, zorder=5)
-        ax.set_xlabel('position in wavelength array')
-        ax.set_ylabel('Spectral resolution')
+        ax.hist(specres_var.flatten(), bins=50)
+        ax.set_xlabel(r'$\frac{\Delta R}{\bar{R}}$')
         plt.tight_layout()
         plt.show()
 
-    return p[1]  # return 50th percentile (median)
+    return p[1], lp  # return 50th percentile (median)
 
 
 def get_RSS(version, plate, bundle, dest, **kwargs):
     '''
-    retrieve a full, log-rebinned datacube of a particular galaxy
+    retrieve a full, log-rebinned row-stacked spectrum of a particular galaxy
     '''
 
     what = '{0}/stack/manga-{0}-{1}-LOGRSS.fits.gz'.format(plate, bundle)
@@ -173,7 +204,7 @@ def target_data(hdu):
     h = hdu[0].header
 
     objra, objdec = h['OBJRA'], h['OBJDEC']
-    cenra, cendec = h['CENRA'], h['CENDEC']
+    cenra, cendec = h['CENRA'], h['CENDEC']  # this is PLATE CENTER
     mangaID = h['MANGAID']
 
     return objra, objdec, cenra, cendec, mangaID
