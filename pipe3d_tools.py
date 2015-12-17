@@ -90,7 +90,7 @@ def process_p3d_out(version, plateifu, t=None):
 
     factor = np.abs(np.sin(a2phi))
 
-    m.get_cutout('MPL-4', plateifu)
+    #m.get_cutout('MPL-4', plateifu)
     R_deproj = R * (1 + 2*factor)
     #im = plt.imshow(mpimg.imread(plateifu + '.png'),
     #                aspect='equal', origin='upper',
@@ -126,6 +126,8 @@ def process_p3d_out(version, plateifu, t=None):
     t_new['NSA_Mstar'] = [mstar,]*ngood
     t_new['Sersic_N'] = [sersic_n,]*ngood
     t_new['Sersic_Flux'] = [sersic_flux,]*ngood # nanomaggies
+    t_new['Xdist'] = XX.flatten()[good_spaxels] * platescale
+    t_new['Ydist'] = YY.flatten()[good_spaxels] * platescale
 
     for i, n in zip(eline_idxs, eline_names):
         t_new[n] = eline[i][good_spaxels].flatten()
