@@ -126,8 +126,8 @@ def process_p3d_out(version, plateifu, t=None):
     t_new['NSA_Mstar'] = [mstar,]*ngood
     t_new['Sersic_N'] = [sersic_n,]*ngood
     t_new['Sersic_Flux'] = [sersic_flux,]*ngood # nanomaggies
-    t_new['Xdist'] = XX.flatten()[good_spaxels] * platescale
-    t_new['Ydist'] = YY.flatten()[good_spaxels] * platescale
+    t_new['Xdist'] = (XX[good_spaxels].flatten()) * platescale
+    t_new['Ydist'] = (YY[good_spaxels].flatten()) * platescale
 
     for i, n in zip(eline_idxs, eline_names):
         t_new[n] = eline[i][good_spaxels].flatten()
@@ -158,6 +158,9 @@ if __name__ == '__main__':
 
     drpall = drpall[((drpall['nsa_ba'] < 2.5) * large_ifu)]
     print len(drpall), 'galaxies'
+
+    #get_p3d_out(version, drpall[0]['plateifu'])
+    #process_p3d_out(version, drpall[0]['plateifu'])
 
     for i, obj in enumerate(drpall):
         if i%10 == 0:

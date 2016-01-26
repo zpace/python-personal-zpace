@@ -11,8 +11,12 @@ from astropy import units as u, constants as c
 from glob import glob
 from scipy.interpolate import interp1d
 from pysynphot import observation, spectrum
+from matplotlib import gridspec, colors
+import pywcsgrid2
+import itertools
 
 drpall_loc = '/home/zpace/Documents/MaNGA_science/'
+dap_loc = '/home/zpace/mangadap/default/'
 pw_loc = drpall_loc + '.saspwd'
 
 uwdata_loc = '/d/www/karben4/'
@@ -522,3 +526,515 @@ def ssp_rebin(logL_ssp, spec_ssp, dlogL_new, Lll=3250.):
     spec_ssp_new = total_in_bin * (dlogL_new/dlogL_ssp)'''
 
     return spec_ssp_new, logL_ssp_new
+
+def read_dap_ifu(plate, ifu):
+    hdu = fits.open('{0}{1}/mangadap-{1}-{2}-default.fits.gz'.format(
+        dap_loc, plate, ifu))
+    objname = '{}-{}'.format(plate, ifu)
+    return hdu, objname
+
+class DAP_elines(object):
+    '''
+    load emission line equivalent widths from the MAPS DAP output
+
+        - hdu: FITS HDU of MaNGA DAP MAPS output
+        - q: string identifying what quantity we're getting (e.g., 'EW')
+    '''
+    def __init__(self, hdu, q='EW', sn_t=2.):
+        self.sn_t = sn_t
+        self.qtype = q
+        self.hdu = hdu
+
+        if q not in ['EW', 'GFLUX', 'SFLUX']:
+            em = 'Invalid FITS extension group: ' + \
+                'choose "EW", "GFLUX", or "SFLUX"'
+            raise KeyError(em)
+        # Build dictionaries with the emission line names to ease selection
+        self.q = 'EMLINE_{}'.format(q)
+        emline = {}
+        for k, v in hdu[self.q].header.items():
+            if (k[0] == 'C') and (len(k) == 3):
+                try:
+                    i = int(k[1:])-1
+                except KeyError:
+                    continue
+                emline[v] = i
+        self.emline = emline
+
+        # select the mask using the HDUCLASS structure
+        mask_extension = hdu[self.q].header['QUALDATA']
+        ivar_extension = hdu[self.q].header['ERRDATA']
+
+        self.ivar_maps = {k: np.array(hdu[ivar_extension].data[v, :, :])
+            for (k, v) in self.emline.iteritems()}
+
+        self.qty_maps = {k: np.array(hdu[self.q].data[v, :, :])
+                         for (k, v) in self.emline.iteritems()}
+
+        self.mask_maps = {k: np.array(hdu[mask_extension].data[v, :, :])
+                          for (k, v) in self.emline.iteritems()}
+
+        #for (k, v) in self.emline.iteritems():
+        #    print k, '\n', self.qty_maps[k] * np.sqrt(self.ivar_maps[k])
+
+        self.SNR_maps = {k: np.ma.array(
+            self.qty_maps[k] * np.sqrt(self.ivar_maps[k]),
+            mask=self.mask_maps[k])
+            for (k, v) in self.emline.iteritems()}
+
+        # mask bad data and data where SNR < sn_t
+        self.qty_maps = {k: np.ma.array(
+            self.qty_maps[k], mask=(self.mask_maps[k]))
+            for (k, v) in self.emline.iteritems()}
+
+        self.eline_hdr = hdu[self.q].header
+
+    def map(self, save=False, objname=None):
+        # make quantity and SNR maps for each species
+        # mostly for QA purposes
+
+        import mpl_toolkits.axes_grid1.axes_grid as axes_grid
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+        from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+
+        cmap1 = plt.cm.cubehelix
+        cmap1.set_bad('gray')
+
+        cmap2 = plt.cm.Purples_r
+        cmap2.set_bad('gray')
+
+        vr = {'GFLUX': [1., 20.], 'EW': [1., 200.], 'SFLUX': [1., 20.]}
+
+        n_species = len(self.emline) # number of rows of subplots
+        n_cols = 2 # col 1 for qty, col 2 for SNR
+        fig_dims = (2.*n_cols + 1., 2.*n_species)
+
+        fig = plt.figure(figsize=fig_dims, dpi=300)
+        gh = pywcsgrid2.GridHelper(wcs=self.eline_hdr)
+        g = axes_grid.ImageGrid(fig, 111,
+                                nrows_ncols=(n_species, n_cols),
+                                ngrids=None, direction='row', axes_pad=.02,
+                                add_all=True, share_all=True,
+                                aspect=True, label_mode='L', cbar_mode=None,
+                                axes_class=(pywcsgrid2.Axes,
+                                            dict(grid_helper=gh)))
+
+        for i, k in enumerate(self.emline.keys()):
+            qpn = 2*i # quantity subplot number
+            spn = 2*i + 1 # SNR subplot number
+            q_im = g[qpn].imshow(self.qty_maps[k], norm=colors.LogNorm(),
+                                 interpolation=None, origin='lower',
+                                 vmin=vr[self.qtype][0],
+                                 vmax=vr[self.qtype][1], cmap=cmap2)
+            s_im = g[spn].imshow(self.SNR_maps[k], norm=colors.LogNorm(),
+                                 vmin=0.5, vmax=20., interpolation=None,
+                                 origin='lower', cmap=cmap1)
+
+            s_c = g[qpn].contour(self.qty_maps[k], levels=[self.sn_t],
+                                 colors='r', linewidths=1.,
+                                 linestyles='-')
+
+            g[spn].contour(self.qty_maps[k], levels=[self.sn_t],
+                           colors='r', linewidths=1., linestyles='-')
+
+            g[qpn].grid()
+            g[spn].grid()
+            g[qpn].set_ticklabel_type(
+                'delta',
+                center_pixel=tuple(t/2. for t in self.qty_maps[k].shape))
+            g[spn].set_ticklabel_type(
+                'delta',
+                center_pixel=tuple(t/2. for t in self.qty_maps[k].shape))
+            g[qpn].add_inner_title('{}'.format(k.replace(
+                '-','')), loc=2, frameon=False)
+
+        qcb_ax = fig.add_axes([0.15, 0.935, 0.7, 0.0175])
+        scb_ax = fig.add_axes([0.15, 0.035, 0.7, 0.0175])
+
+        scb = fig.colorbar(s_im, cax=scb_ax, orientation='horizontal')
+        scb.set_label('S/N')
+        scb.add_lines(s_c)
+        scb.set_ticks([1., 2., 5., 10.])
+
+        qcb = fig.colorbar(q_im, cax=qcb_ax, orientation='horizontal')
+        q = self.hdu[self.q].header['BUNIT'].replace('^2', '$^2$')
+        qcb.set_label(r'{} [{}]'.format(self.qtype, q))
+
+        plt.suptitle(objname)
+
+        if save == False:
+            plt.show()
+        else:
+            plt.savefig('eline_map.png')
+
+        plt.close()
+
+    def to_BPT(self):
+        # convenience method: returns a dict of lines, that you can
+        # double-splat into BPT.__init__() below
+        ldata = {'Ha': self.qty_maps['Ha-----6564'],
+                 'Hb': self.qty_maps['Hb-----4862'],
+                 'OIII': self.qty_maps['OIII---4960'] + \
+                    self.qty_maps['OIII---5008'],
+                 'NII': self.qty_maps['NII----6549'] + \
+                    self.qty_maps['NII----6585'],
+                 'SII': self.qty_maps['SII----6732'] + \
+                    self.qty_maps['SII----6718'],
+                 'OI': self.qty_maps['OI-----6302'] + \
+                    self.qty_maps['OI-----6365']}
+
+        return ldata
+
+
+class BPT(object):
+    '''
+    BPT classification in three schemes:
+        - [NII]/Ha vs [OIII]/Hb (scheme 1)
+        - [SII]/Ha vs [OIII]/Ha (scheme 2)
+        - [OI]/Ha vs [OIII]/Hb (scheme 3)
+
+    (after Kewley et al., 2006, MNRAS372: 961-976)
+
+    Doesn't care about dimensionality of input -- just that all
+        inputs are same size
+
+    In self.diag, 0 for ambiguous, 1 for star-forming,
+        2 for composite, 3 for Seyfert, 4 for LI(N)ER.
+    '''
+
+    def __init__(self, Ha, Hb, OIII, NII, SII, OI):
+
+        '''
+        SF:
+            - below and to left of Ka03 in [NII]/Ha vs [OIII]/Hb
+            - below and to left of Ke01 in [SII]/Ha vs [OIII]/Hb
+            - below and to left of Ke01 in [OI]/Ha vs [OIII]/Hb
+
+        Composite:
+            - between Ka03 and Ke01 in [NII]/Ha vs [OIII]/Hb
+            - between Ka03 and Ke01 in [NII]/Ha vs [OIII]/Hb
+
+        AGN:
+            - above Ke01 in [NII]/Ha vs [OIII]/Hb
+            - above Ke01 in [SII]/Ha vs [OIII]/Hb
+            - above Ke01 in [OI]/Ha vs [OIII]/Hb
+            - above Seyfert-LI(N)ER line in [SII]/Ha vs [OIII]/Hb
+            - above Seyfert-LI(N)ER line in [OI]/Ha vs [OIII]/Hb
+
+        LI(N)ER:
+            - above Ke01 in [NII]/Ha vs [OIII]/Hb
+            - above Ke01 in [SII]/Ha vs [OIII]/Hb
+            - above Ke01 in [OI]/Ha vs [OIII]/Hb
+            - below Seyfert-LI(N)ER line in [SII]/Ha vs [OIII]/Hb
+            - below Seyfert-LI(N)ER line in [OI]/Ha vs [OIII]/Hb
+
+        '''
+
+        self.Ka03_cs = {'NII_Ha': {'u': 0.61, 'v': -0.05, 'w': 1.3, 'l': -.1}}
+        self.Ke01_cs = {'SII_Ha': {'u': 0.72, 'v': -0.32, 'w': 1.3, 'l': .1},
+                        'OI_Ha': {'u': 0.73, 'v': 0.59, 'w':1.33, 'l': .3},
+                        'NII_Ha': {'u': 0.61, 'v': -0.47, 'w': 1.19, 'l': 1.7}}
+        self.Sf_L_cs = {'SII_Ha': {'m': 1.89, 'b': 0.76},
+                        'OI_Ha': {'m': 1.18, 'b': 1.3}}
+
+        self.SII_Ha = np.ma.array(np.log10(SII/Ha),
+                                  mask=(Ha.mask | SII.mask))
+        self.NII_Ha = np.ma.array(np.log10(NII/Ha),
+                                  mask=(Ha.mask | NII.mask))
+        self.OI_Ha = np.ma.array(np.log10(OI/Ha),
+                                 mask=(Ha.mask | OI.mask))
+        self.OIII_Hb = np.ma.array(np.log10(OIII/Hb),
+                                   mask=(OIII.mask | Hb.mask))
+
+        # product of conditions for SF classification
+        SF = (~self.Ka03_decision(self.NII_Ha, self.OIII_Hb,
+            **self.Ka03_cs['NII_Ha']))
+        SF *= (~self.Ke01_decision(
+            self.SII_Ha, self.OIII_Hb,
+            **self.Ke01_cs['SII_Ha']))
+        SF *= (~self.Ke01_decision(
+            self.OI_Ha, self.OIII_Hb,
+            **self.Ke01_cs['OI_Ha']))
+        self.SF = np.ma.array(
+            SF,
+            mask=(self.SII_Ha.mask | self.NII_Ha.mask | \
+                  self.OI_Ha.mask | self.OIII_Hb.mask))
+
+        # product of conditions for composite
+        comp = (self.Ka03_decision(
+            self.NII_Ha, self.OIII_Hb,
+            **self.Ka03_cs['NII_Ha']))
+        comp *= (~self.Ke01_decision(
+            self.NII_Ha, self.OIII_Hb,
+            **self.Ke01_cs['NII_Ha']))
+        comp *= (~self.Ke01_decision(
+            self.SII_Ha, self.OIII_Hb,
+            **self.Ke01_cs['SII_Ha']))
+        comp *= (~self.Ke01_decision(
+            self.OI_Ha, self.OIII_Hb,
+            **self.Ke01_cs['OI_Ha'])) & (self.OI_Ha < -.7)
+        self.comp = np.ma.array(
+            comp,
+            mask=(self.NII_Ha.mask | self.OIII_Hb.mask))
+
+        # product of conditions for AGN
+        AGN = (self.Ke01_decision(
+            self.NII_Ha, self.OIII_Hb,
+            **self.Ke01_cs['NII_Ha']))
+        AGN *= (self.Ke01_decision(
+            self.SII_Ha, self.OIII_Hb,
+            **self.Ke01_cs['SII_Ha']))
+        AGN *= (self.Ke01_decision(
+            self.OI_Ha, self.OIII_Hb,
+            **self.Ke01_cs['OI_Ha']))
+        AGN *= self.AGN_LIER_decision(
+            self.SII_Ha, self.OIII_Hb,
+            **self.Sf_L_cs['SII_Ha'])
+        AGN *= self.AGN_LIER_decision(
+            self.OI_Ha, self.OIII_Hb,
+            **self.Sf_L_cs['OI_Ha'])
+        self.AGN = np.ma.array(
+            AGN,
+            mask=(self.SII_Ha.mask | self.NII_Ha.mask | \
+                  self.OI_Ha.mask | self.OIII_Hb.mask))
+
+        # product of conditions for LI(N)ERs
+        LIER = (self.Ke01_decision(
+            self.NII_Ha, self.OIII_Hb,
+            **self.Ke01_cs['NII_Ha']))
+        LIER *= (self.Ke01_decision(
+            self.SII_Ha, self.OIII_Hb,
+            **self.Ke01_cs['SII_Ha']))
+        LIER *= (self.Ke01_decision(
+            self.OI_Ha, self.OIII_Hb,
+            **self.Ke01_cs['OI_Ha']))
+        LIER *= ~self.AGN_LIER_decision(
+            self.SII_Ha, self.OIII_Hb,
+            **self.Sf_L_cs['SII_Ha'])
+        LIER *= ~self.AGN_LIER_decision(
+            self.OI_Ha, self.OIII_Hb,
+            **self.Sf_L_cs['OI_Ha'])
+        self.LIER = np.ma.array(
+            LIER,
+            mask=(self.SII_Ha.mask | self.NII_Ha.mask | \
+                  self.OI_Ha.mask | self.OIII_Hb.mask))
+
+        # ambiguous galaxies are zero in all of SF, comp, AGN, and LIER
+        stack_class = np.stack((self.SF, self.comp, self.AGN, self.LIER))
+        self.ambig = np.logical_not(np.any(stack_class, axis=0))
+        self.ambig = np.ma.array(
+            self.ambig,
+            mask=(self.SII_Ha.mask | self.NII_Ha.mask | \
+                  self.OI_Ha.mask | self.OIII_Hb.mask))
+
+        self.stack_class = np.stack(
+            (self.ambig, self.SF, self.comp, self.AGN, self.LIER))
+        self.diag = np.argmax(
+            np.stack(
+                (self.ambig, self.SF, self.comp, self.AGN, self.LIER)),
+            axis=0)
+        self.diag = np.ma.array(
+            self.diag, mask=(self.SII_Ha.mask | self.NII_Ha.mask | \
+                             self.OI_Ha.mask | self.OIII_Hb.mask))
+
+        # define color map
+        self.cmap = colors.ListedColormap(
+            ['gray', 'blue', 'green', 'red', 'orange'])
+        self.cmap.set_bad('w')
+        self.cmap_bounds = [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5]
+        self.norm = colors.BoundaryNorm(self.cmap_bounds, self.cmap.N)
+
+    def Ka03_(self, x, u, v, w, l):
+        return u/(x + v) + w
+
+    def Ke01_(self, x, u, v, w, l):
+        return u/(x + v) + w
+
+    def AGN_LIER_(self, x, m, b):
+        return m*x + b
+
+    def Ka03_decision(self, x, y, u, v, w, l):
+        '''
+        y is [OIII]/Hb
+        x is [NII]/Ha, [SII]/Ha, or [OI]/Ha
+        '''
+        return (y > u/(x + v) + w) | (x > l)
+
+    def Ke01_decision(self, x, y, u, v, w, l):
+        '''
+        y is [OIII]/Hb
+        x is [NII]/Ha, [SII]/Ha, or [OI]/Ha
+        '''
+        return (y > u/(x + v) + w) | (x > l)
+
+    def AGN_LIER_decision(self, x, y, m, b):
+        '''
+        y is [OIII]/Hb
+        x is [NII]/Ha, [SII]/Ha, or [OI]/Ha
+        '''
+        return y > m * x + b
+
+    def plot(self, save=False, objname=None):
+        cs = ['gray', 'blue', 'green', 'red', 'orange']
+        ls = ['ambig.', 'SF', 'comp.', 'AGN', 'LIER']
+        fig = plt.figure(dpi=300, figsize=(10, 5))
+        gs = gridspec.GridSpec(
+            nrows=1, ncols=3, left=0.1, bottom=0.25, right=0.95, top=0.95,
+            wspace=0.05, hspace=0., width_ratios=[1, 1, 1])
+
+        NII_ax = plt.subplot(gs[0])
+        SII_ax = plt.subplot(gs[1])
+        OI_ax = plt.subplot(gs[2])
+
+        # plot data on each set of axes
+        for (ax, qty) in zip([NII_ax, SII_ax, OI_ax],
+                             [self.NII_Ha, self.SII_Ha, self.OI_Ha]):
+            for i in range(5):
+                ax.scatter(
+                    qty[self.diag == c], self.OIII_Hb[self.diag == c],
+                    edgecolor='None', facecolor=cs[i], label = ls[i],
+                    marker='.', alpha=0.5)
+
+        # plot the Ke01 (extreme starburst) line on all three axes
+        NII_Ha_grid = np.linspace(-2., 1., 200)
+        SII_Ha_grid = np.linspace(-1.25, 0.75, 200)
+        OI_Ha_grid = np.linspace(-2.25, 0., 200)
+
+        Ke01_line_NII = self.Ke01_(
+            NII_Ha_grid, **self.Ke01_cs['NII_Ha'])
+        Ke01_line_SII = self.Ke01_(
+            SII_Ha_grid, **self.Ke01_cs['SII_Ha'])
+        Ke01_line_OI = self.Ke01_(
+            OI_Ha_grid, **self.Ke01_cs['OI_Ha'])
+
+        NII_ax.plot(
+            NII_Ha_grid[NII_Ha_grid < 0.4],
+            Ke01_line_NII[NII_Ha_grid < 0.4],
+            linestyle='-', c='k',
+            label='Extr. S-B lim. (Ke01)', marker='')
+        SII_ax.plot(
+            SII_Ha_grid[SII_Ha_grid < 0.1],
+            Ke01_line_SII[SII_Ha_grid < 0.1],
+            linestyle='-', c='k', marker='')
+        OI_ax.plot(
+            OI_Ha_grid[OI_Ha_grid < -.7],
+            Ke01_line_OI[OI_Ha_grid < -.7],
+            linestyle='-', c='k', marker='')
+
+        # plot the Ka03 (pure SF) line on NII axes where it's less than Ka01
+        Ka03_line_NII = self.Ka03_(
+            NII_Ha_grid, **self.Ka03_cs['NII_Ha'])
+        NII_ax.plot(
+            NII_Ha_grid[(Ka03_line_NII < Ke01_line_NII) * \
+                             (NII_Ha_grid < 0.4)],
+            Ka03_line_NII[(Ka03_line_NII < Ke01_line_NII) * \
+                          (NII_Ha_grid < 0.4)],
+            linestyle='--', c='k', marker='',
+            label='Pure SF lim. (Ka03)')
+
+        # plot the AGN-LIER line on SII & OI axes where it's more than Ka01
+        NII_ax.plot([-5., -10.], [-10., -10.],
+                    linestyle='-.', c='k', marker='', label='AGN-LIER')
+        Sf_L_line_SII = self.AGN_LIER_(SII_Ha_grid, **self.Sf_L_cs['SII_Ha'])
+        SII_ax.plot(
+            SII_Ha_grid[(Sf_L_line_SII > Ke01_line_SII) |
+                             (SII_Ha_grid > 0.1)],
+            Sf_L_line_SII[(Sf_L_line_SII > Ke01_line_SII) |
+                          (SII_Ha_grid > 0.1)],
+            linestyle='-.', c='k', marker='', label='AGN-LIER')
+        Sf_L_line_OI = self.AGN_LIER_(OI_Ha_grid, **self.Sf_L_cs['OI_Ha'])
+        OI_ax.plot(
+            OI_Ha_grid[(Sf_L_line_OI > Ke01_line_OI) |
+                            (OI_Ha_grid > -0.9)],
+            Sf_L_line_OI[(Sf_L_line_OI > Ke01_line_OI) |
+                         (OI_Ha_grid > -0.9)],
+            linestyle='-.', c='k', marker='')
+
+        # scatter plot of spaxels
+        diag_scatter = NII_ax.scatter(
+            self.NII_Ha, self.OIII_Hb, c=self.diag, edgecolor='None',
+            marker='.', cmap=self.cmap, norm=self.norm, vmin=0., vmax=4.)
+        SII_ax.scatter(
+            self.SII_Ha, self.OIII_Hb, c=self.diag, edgecolor='None',
+            marker='.', cmap=self.cmap, norm=self.norm, vmin=0., vmax=4.)
+        OI_ax.scatter(
+            self.OI_Ha, self.OIII_Hb, c=self.diag, edgecolor='None',
+            marker='.', cmap=self.cmap, norm=self.norm, vmin=0., vmax=4.)
+        '''cbar = fig.colorbar(diag_scatter, cax=cbar_ax)
+        cbar.set_ticks([0., 1., 2., 3., 4])
+        cbar.set_ticklabels(['UND.', 'SF', 'Comp.', 'AGN', 'LIER'])
+        cbar.ax.tick_params(labelsize=10, length=0)
+        cbar_ax = fig.add_axes([0.925, 0.1, 0.025, 0.8])'''
+
+        # fix axes limits and scales
+        NII_ax.set_ylim([-1.25, 1.5])
+        SII_ax.set_ylim(NII_ax.get_ylim())
+        OI_ax.set_ylim(NII_ax.get_ylim())
+        SII_ax.set_yticklabels([])
+        OI_ax.set_yticklabels([])
+        NII_ax.set_xlim([-2., 1.])
+        SII_ax.set_xlim([-1.25, 0.75])
+        OI_ax.set_xlim([-2.25, 0.])
+
+        NII_ax.legend(loc='lower center', prop={'size': 11},
+                      ncol=4, bbox_to_anchor=(1.5, -0.35, 0.1, 3.))
+
+        NII_ax.set_ylabel(
+            r'$\log{\frac{\mathrm{EW(OIII)}}{\mathrm{EW(H\beta)}}}$',
+            size=14)
+        NII_ax.set_xlabel(
+            r'$\log{\frac{\mathrm{EW(NII)}}{\mathrm{EW(H\alpha)}}}$',
+            size=14)
+        SII_ax.set_xlabel(
+            r'$\log{\frac{\mathrm{EW(SII)}}{\mathrm{EW(H\alpha)}}}$',
+            size=14)
+        OI_ax.set_xlabel(
+            r'$\log{\frac{\mathrm{EW(OI)}}{\mathrm{EW(H\alpha)}}}$',
+            size=14)
+
+        if objname is not None:
+            plt.suptitle('{} BPT'.format(objname))
+
+        if save == False:
+            plt.show()
+        else:
+            plt.savefig('bpt.png')
+
+        plt.close()
+
+    def map(self, h, save=False, objname=None):
+        '''
+        make a BPT map of an ifu
+        '''
+
+        fig = plt.figure(figsize=(5, 4), dpi=300)
+        ax = pywcsgrid2.subplot(111, header=h)
+
+        im = ax.imshow(
+            self.diag, origin='lower', aspect='equal', interpolation='None',
+            cmap=self.cmap, norm=self.norm, vmin=0., vmax=4.)
+        cbar = plt.colorbar(im)
+        cbar.set_ticks([0., 1., 2., 3., 4])
+        cbar.set_ticklabels(['UND.', 'SF', 'Comp.', 'AGN', 'LIER'])
+        cbar.ax.tick_params(labelsize=9, length=0)
+        ax.set_ticklabel_type(
+            'delta',
+            center_pixel=tuple(t/2. for t in self.diag.shape))
+        # add beam
+        bs = 2.*u.arcsec/(h['CDELT1'] * h['PC1_1'] * u.deg)
+        ax.add_beam_size(bs, bs, 0., loc=1)
+        ax.tick_params(axis='both', colors='w')
+        ax.grid()
+        plt.subplots_adjust(bottom=0.125, left=0.2, top=0.95, right=0.95)
+
+        if objname is not None:
+            plt.suptitle('{} BPT'.format(objname))
+
+        #plt.tight_layout()
+
+        if save == False:
+            plt.show()
+        else:
+            plt.savefig('bpt_map.png')
+
+        plt.close()

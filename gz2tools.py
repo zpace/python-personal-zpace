@@ -8,7 +8,7 @@ from os import system
 import datetime
 
 
-def download_sloan_im(ra, dec, scale, width=256, height=256):
+def download_sloan_im(ra, dec, scale, width=256, height=256, verbose=True):
     '''
     ra & dec: sky coords
     scale: pixel scale (in arcsec) of image (.02 * rPetro is recommended for galaxies)
@@ -18,18 +18,22 @@ def download_sloan_im(ra, dec, scale, width=256, height=256):
 
     width, height = int(width), int(height)
 
-    print 'Requesting image...'
-    print 'RA: {}'.format(ra)
-    print 'DEC: {}'.format(dec)
-    print 'scale: {} arcsec/pix'.format(scale)
-    print 'width: {} pix'.format(width)
-    print 'height: {} pix'.format(height)
+    if verbose == True:
+        print 'Requesting image...'
+        print 'RA: {}'.format(ra)
+        print 'DEC: {}'.format(dec)
+        print 'scale: {} arcsec/pix'.format(scale)
+        print 'width: {} pix'.format(width)
+        print 'height: {} pix'.format(height)
 
     base_url = \
-        'http://skyservice.pha.jhu.edu/DR10/ImgCutout/getjpeg.aspx?opt=0'
+        'http://skyservice.pha.jhu.edu/DR12/ImgCutout/getjpeg.' + \
+        'aspx?opt=G&query=&Grid=on'
     im_url = base_url + '&width=' + str(width) + '&height=' + \
         str(height) + '&scale=' + str(np.round(scale, 3)) + '&ra=' + \
         str(ra) + '&dec=' + str(dec)
+
+    #print im_url
 
     im = urllib.urlopen(im_url)
     image_file = io.BytesIO(im.read())
@@ -58,7 +62,7 @@ def save_sloan(ra, dec, scale, width=256, height=256, imname=None,
         # if there's no name specified, just use the RA and Dec
         imname = str(ra) + '_' + str(dec)
 
-    img = download_sloan_im(ra, dec, scale, width, height)
+    img = download_sloan_im(ra, dec, scale, width, height, verbose=False)
     imsave(imname + '.' + ext, img)
 
 
