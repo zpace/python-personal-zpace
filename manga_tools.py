@@ -5,15 +5,19 @@ import astropy.io.fits as fits
 import pandas as pd
 import os
 import re
-from matplotlib import rcParams, pyplot as plt
+from matplotlib import rcParams, pyplot as plt, patches
 from astropy.wcs import WCS
-from astropy import units as u, constants as c
+from astropy import units as u, constants as c, coordinates as coords, wcs
 from glob import glob
 from scipy.interpolate import interp1d
 from pysynphot import observation, spectrum
 from matplotlib import gridspec, colors
+from sklearn import gaussian_process as gp
+import matplotlib.ticker as mtick
 import pywcsgrid2
 import itertools
+import gz2tools as gz2
+import copy
 
 drpall_loc = '/home/zpace/Documents/MaNGA_science/'
 dap_loc = '/home/zpace/mangadap/default/'
@@ -26,7 +30,7 @@ MPL_versions = {'MPL-3': 'v1_3_3', 'MPL-4': 'v1_5_1'}
 base_url = 'dtn01.sdss.org/sas/'
 mangaspec_base_url = base_url + 'mangawork/manga/spectro/redux/'
 
-c = 299792.458 #km/s
+#c = 299792.458 #km/s
 H0 = 70. #km/s/Mpc
 
 def get_drpall_val(fname, qtys, plateifu):
@@ -232,301 +236,6 @@ def target_data(hdu):
 
     return objra, objdec, cenra, cendec, mangaID
 
-
-def make_ifu_fig(hdu):
-    '''
-    DOES NOT WORK
-    '''
-    wcs = WCS(hdu[0].header)
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection=wcs)
-    ax.set_xlabel(r'RA')
-    ax.set_ylabel(r'Dec')
-    return fig
-
-
-def conroy_to_table(fname):
-    '''
-    translate a Conroy-style SSP (at one metallicity)
-        to a bunch of fits tables
-
-    Conroy format
-
-    <HEADER LINES> (beginning with #)
-    <NAXIS1> (number of spectral bins) <NAXIS2> (number of age bins)
-
-
-    '''
-
-    names = ['logT', 'logM', 'logLbol', 'logSFR', 'spectra']
-
-    data = []
-
-    Z = None
-
-    with open(fname) as f:
-        for i, l in enumerate(f):
-            if (l[0] == '#') and (i != 0):
-                pass
-            elif i == 0:
-                for t in l.split():
-                    try:
-                        Z = float(t)
-                        break
-                    except ValueError:
-                        pass
-            else:
-                data.append(
-                    [float(j) for j in l.rstrip('\n').lstrip(' ').split()])
-
-    if Z is None:
-        print 'NO METALLICITY PARSED for file \n{}'.format(fname)
-    else:
-        print 'log Z/Zsol found: {}'.format(Z)
-
-    nT, nL = data.pop(0)  # number of age bins and number of wavelengths
-    nT, nL = int(nT), int(nL)
-    l = table.Column(data=data.pop(0) * u.AA,
-                     name='lambda')  # wavelengths
-
-    assert len(l) == nL, 'There should be {} elements in nL, \
-        but there are {}'.format(len(l), len(nL))
-
-    # now restrict the wavelength range to a usable interval
-    lgood = ((1500. * u.AA <= l) * (l <= 1.1 * u.micron))
-    l = l[lgood]
-
-    # log-transform
-    logl = np.log(l / u.Angstrom)
-
-    dlogl = np.mean(logl[1:] - logl[:-1])
-    CRVAL1 = logl[0]
-    CDELT1 = dlogl
-    NAXIS1 = len(logl)
-    # print CRVAL1, CDELT1, NAXIS1
-
-    # spectra are every second row
-    spectra_fnu = data[1::2] * u.solLum/u.Hz
-    # use only good wavelength range
-    spectra_fnu = [row[lgood] for row in spectra_fnu]
-    metadata = data[::2]
-
-    age = table.Column([10.**i[0] / 10**9 for i in metadata] * u.Gyr,
-                       name='age')
-    mass = table.Column([10.**i[1] for i in metadata] * u.solMass,
-                        name='orig SSP mass')
-    lbol = table.Column([10.**i[2] for i in metadata] * u.solLum,
-                        name='lbol')
-    SFR = table.Column([10.**i[3] for i in metadata] * u.solMass/u.year,
-                       name='SFR')
-
-    '''
-    # this is how you convert one row of spectra_fnu into f_lambda units
-    f_nu = spectra_fnu[0]
-    f_lambda = (f_nu/u.cm**2.).to(
-        u.erg/u.s/u.cm**2./u.AA,
-        equivalencies=u.spectral_density(l)) * u.cm**2.
-    '''
-
-    # do the same thing as above, except normalize by SSP mass
-    spectra_fl_m = [(f_nu/u.cm**2.).to(
-        u.erg/u.s/u.cm**2./u.AA,
-        equivalencies=u.spectral_density(l)) * u.cm**2. / (m*u.solMass)
-        for f_nu, m in zip(spectra_fnu, mass)]
-
-    SSPs = table.Table(data=[age, mass, lbol, SFR])
-    SSPs.add_column(table.Column(np.ones_like(np.asarray(SFR)) * u.solMass,
-                                 name='new SSP mass'))  # all 1
-    SSPs.add_column(table.Column(data=spectra_fl_m * spectra_fl_m[0].unit,
-                                 name='spectrum'))
-    SSPs.add_column(table.Column(data=Z * np.ones_like(np.asarray(SFR)),
-                                 name='Z'))
-
-    return SSPs, l
-
-
-def make_conroy_file(loc, plot=False, Zll=.05, Zul=99.,
-                     Tll=.0008, Tul=13.5,
-                     Lll=3250., Lul=15000.):
-    fnames = glob(loc + '*.out.spec')
-
-    print '{} metallicities spotted'.format(len(fnames))
-
-    SSPs = table.vstack([conroy_to_table(f)[0]
-                         for f in fnames])
-
-    Zconds = (Zll <= 10**SSPs['Z']) * (10**SSPs['Z'] <= Zul)
-    Tconds = (Tll <= SSPs['age']) * (SSPs['age'] <= Tul)
-
-    SSPs = SSPs[Zconds * Tconds]
-
-    print 'SSPs read'
-
-    SSPs.sort(['age', 'Z'])
-
-    Ts = np.unique(SSPs['age'])
-    Ts.sort()
-    Zs = np.unique(SSPs['Z'])
-    Zs.sort()
-    # retrieve the array of wavelengths by calling
-    # conroy_to_table one last time
-    Ls = conroy_to_table(fnames[0])[1]
-    Lconds = (Lll <= Ls) * (Ls <= Lul)
-    Ls = Ls[Lconds]
-
-    nT, nZ, nL = len(Ts), len(Zs), len(Ls)
-
-    if plot == True:
-        plt.close('all')
-
-        fig = plt.figure()
-        ax1 = fig.add_subplot(131)
-        ax2 = fig.add_subplot(132)
-        ax3 = fig.add_subplot(133)
-
-        ax1.semilogy(Ts)
-        ax2.plot(Zs)
-        ax3.semilogy(Ls)
-        plt.tight_layout()
-        plt.show()
-
-    # initialize an array of dimension [nT, nZ, nL]
-    SSPs_cube = np.empty([nT, nZ, nL])
-
-    # T, Z, and L are evenly spaced in log (Z is already there)
-
-    logT = np.log(Ts)
-    logL = np.log(Ls)
-
-    # set up header keywords to make reading in & writing out easier
-
-    NAXIS = 3
-
-    # define all the header keywords you'll need for the fits file
-
-    h = {'CTYPE3': 'ln age/Gyr',
-         'CRVAL3': np.min(logT),
-         'NAXIS3': nT,
-         'CDELT3': np.abs(np.mean(logT[:-1] - logT[1:])),
-         'CTYPE2': 'log10 Z/Zsol',
-         'CRVAL2': np.min(Zs),
-         'NAXIS2': nZ,
-         'CDELT2': np.abs(np.mean(Zs[:-1] - Zs[1:])),
-         'CTYPE1': 'ln lambda/AA',
-         'CRVAL1': np.min(logL),
-         'NAXIS1': nL,
-         'CDELT1': np.abs(np.mean(logL[:-1] - logL[1:])),
-         'BUNIT': SSPs['spectrum'].unit.to_string(),
-         'NAXIS': NAXIS}
-
-    for i in range(len(logT)):  # iterate over ages
-        for j in range(len(Zs)):  # iterate over metallicities
-            # print 'Z = {}, T = {}'.format(Zs[j], Ts[i])
-            Zcond = (SSPs['Z'] == Zs[j])
-            Tcond = (SSPs['age'] == Ts[i])
-            spectrum = SSPs[Zcond * Tcond]['spectrum']
-            SSPs_cube[i, j, :] = spectrum[0][Lconds]
-
-    h['BSCALE'] = np.median(SSPs_cube)
-    SSPs_cube /= h['BSCALE']
-    print h
-
-    print 'SSP cube constructed'
-    hdu = fits.PrimaryHDU(SSPs_cube)
-    for key, value in zip(h.keys(), h.values()):
-        hdu.header[key] = value
-    hdu.writeto('conroy_SSPs.fits', clobber=True)
-    print 'FITS file written'
-
-    # return SSPs, SSPs_cube
-
-
-def models(fname):
-    ssps = fits.open(fname)
-    logL = ssps[0].header['CRVAL1'] + np.linspace(
-        0., ssps[0].header['CDELT1'] * (ssps[0].header['NAXIS1'] - 1),
-        ssps[0].header['NAXIS1'])
-
-    return logL, ssps[0].data
-
-
-def ssp_rebin(logL_ssp, spec_ssp, dlogL_new, Lll=3250.):
-    '''
-    rebin a GRID of model spectrum to have an identical velocity
-    resolution to an input spectrum
-
-    intended to be used on a grid of models with wavelength varying
-    along final axis (in 3d array)
-
-    DEPENDS ON pysynphot, which may not be an awesome thing, but
-        it definitely preserves spectral integrity, and does not suffer
-        from drawbacks of interpolation (failing to average line profiles)
-    '''
-    dlogL_ssp = np.median(logL_ssp[1:] - logL_ssp[:-1])
-    f = dlogL_ssp/dlogL_new
-
-    # print 'zoom factor: {}'.format(f)
-    # print 'new array should have length {}'.format(logL_ssp.shape[0]*f)
-
-    # print spec_ssp.shape
-
-    # we want to only sample where we're sure we have data
-    CRVAL1_new = logL_ssp[0] - 0.5*dlogL_ssp + 0.5*dlogL_new
-    CRSTOP_new = logL_ssp[-1] + 0.5*dlogL_ssp - 0.5*dlogL_new
-    NAXIS1_new = int((CRSTOP_new - CRVAL1_new) / dlogL_new)
-    # start at exp(CRVAL1_new) AA, and take samples every exp(dlogL_new) AA
-    logL_ssp_new = CRVAL1_new + \
-        np.linspace(0., dlogL_new*(NAXIS1_new - 1), NAXIS1_new)
-    L_new = np.exp(logL_ssp_new)
-    L_ssp = np.exp(logL_ssp)
-
-    # now find the desired new wavelengths
-
-    spec = spectrum.ArraySourceSpectrum(wave=L_ssp, flux=spec_ssp)
-    f = np.ones_like(L_ssp)
-    filt = spectrum.ArraySpectralElement(wave=L_ssp, throughput=f,
-                                         waveunits='angstrom')
-    obs = observation.Observation(spec, filt, binset=L_new,
-                                  force='taper')
-    spec_ssp_new = obs.binflux
-
-    # the following are previous attempts to do this rebinning
-
-    '''
-    # first, interpolate to a constant multiple of the desired resolution
-    r_interm = int(1./f)
-    print r_interm
-    dlogL_interm = f * dlogL_new
-    print dlogL_interm
-
-    CDELT1_interm = dlogL_interm
-    CRVAL1_interm = logL_ssp[0] + 0.5*CDELT1_interm
-    CRSTOP_interm = logL_ssp[-1] - 0.5*CDELT1_interm
-    NAXIS1_interm = int((CRSTOP_interm - CRVAL1_interm) / CDELT1_interm)
-    logL_ssp_interm = CRVAL1_interm + np.linspace(
-        0., CDELT1_interm * (NAXIS1_interm - 1), NAXIS1_interm)
-    edges_interm = np.column_stack((logL_ssp_interm - 0.5*CDELT1_interm,
-                                    logL_ssp_interm + 0.5*CDELT1_interm))
-
-    spec_interp = interp1d(logL_ssp, spec_ssp)
-    spec_interm = spec_interp(logL_ssp_interm)
-    print spec_interm.shape
-
-    spec_ssp_new = zoom(spec_interm, zoom=[1., 1., 1./r_interm])[1:-1]
-    logL_ssp_new = zoom(logL_ssp_interm, zoom=1./r_interm)[1:-1]
-    print logL_ssp_new.shape'''
-
-    '''s = np.cumsum(spec_ssp, axis=-1)
-    # interpolate cumulative array
-    s_interpolator = interp1d(x=logL_ssp, y=s, kind='linear')
-    s_interpolated_l = s_interpolator(edges[:, 0])
-    s_interpolated_u = s_interpolator(edges[:, 1])
-    total_in_bin = np.diff(
-        np.row_stack((s_interpolated_l, s_interpolated_u)), n=1, axis=0)
-    spec_ssp_new = total_in_bin * (dlogL_new/dlogL_ssp)'''
-
-    return spec_ssp_new, logL_ssp_new
-
 def read_dap_ifu(plate, ifu):
     hdu = fits.open('{0}{1}/mangadap-{1}-{2}-default.fits.gz'.format(
         dap_loc, plate, ifu))
@@ -540,7 +249,8 @@ class DAP_elines(object):
         - hdu: FITS HDU of MaNGA DAP MAPS output
         - q: string identifying what quantity we're getting (e.g., 'EW')
     '''
-    def __init__(self, hdu, q='EW', sn_t=2.):
+    def __init__(self, hdu, q='EW', sn_t=3.):
+        import re
         self.sn_t = sn_t
         self.qtype = q
         self.hdu = hdu
@@ -565,7 +275,7 @@ class DAP_elines(object):
         mask_extension = hdu[self.q].header['QUALDATA']
         ivar_extension = hdu[self.q].header['ERRDATA']
 
-        self.ivar_maps = {k: np.array(hdu[ivar_extension].data[v, :, :])
+        self.ivar_maps = {k: np.array(hdu[ivar_extension].data[v, :, :]*64.)
             for (k, v) in self.emline.iteritems()}
 
         self.qty_maps = {k: np.array(hdu[self.q].data[v, :, :])
@@ -582,6 +292,9 @@ class DAP_elines(object):
             mask=self.mask_maps[k])
             for (k, v) in self.emline.iteritems()}
 
+        self.SNR_mask_maps = {k: self.SNR_maps[k] < sn_t
+                              for (k, v) in self.emline.iteritems()}
+
         # mask bad data and data where SNR < sn_t
         self.qty_maps = {k: np.ma.array(
             self.qty_maps[k], mask=(self.mask_maps[k]))
@@ -589,7 +302,38 @@ class DAP_elines(object):
 
         self.eline_hdr = hdu[self.q].header
 
-    def map(self, save=False, objname=None):
+        self.lines_per_species = {}
+        self.species_mask_maps = {}
+        self.species_ivar_maps = {}
+        self.species_SNR_maps = {}
+        self.species_maps = {}
+        # which lines belong to which species
+        for k in self.qty_maps.keys():
+            s, l = re.split(r'[\s-]+', k.replace('d', ''))
+            if s not in self.lines_per_species:
+                self.lines_per_species[s] = [k, ]
+            else:
+                self.lines_per_species[s].append(k)
+
+        for s, ls in self.lines_per_species.iteritems():
+            # masks
+            # any is like logical_or
+            self.species_mask_maps[s] = np.any([
+                self.mask_maps[k] for k in ls], axis=0)
+            # fluxes
+            self.species_maps[s] = np.ma.array(np.sum(
+                [self.qty_maps[k] for k in ls], axis=0),
+                mask=self.species_mask_maps[s])
+            # ivar maps
+            self.species_ivar_maps[s] = np.ma.array(1./np.sum(
+                [1./self.ivar_maps[k] for k in ls],
+                axis=0), mask=self.species_mask_maps[s])*64.
+            # SNR maps
+            self.species_SNR_maps[s] = np.ma.array(np.sqrt(
+                self.species_ivar_maps[s]) * self.species_maps[s],
+                mask=self.species_mask_maps[s])
+
+    def map(self, save=False, objname=None, loc=''):
         # make quantity and SNR maps for each species
         # mostly for QA purposes
 
@@ -603,39 +347,53 @@ class DAP_elines(object):
         cmap2 = plt.cm.Purples_r
         cmap2.set_bad('gray')
 
-        vr = {'GFLUX': [1., 20.], 'EW': [1., 200.], 'SFLUX': [1., 20.]}
-
         n_species = len(self.emline) # number of rows of subplots
         n_cols = 2 # col 1 for qty, col 2 for SNR
-        fig_dims = (2.*n_cols + 1., 2.*n_species)
+        fig_dims = (3.*n_cols, 2.*n_species)
 
         fig = plt.figure(figsize=fig_dims, dpi=300)
         gh = pywcsgrid2.GridHelper(wcs=self.eline_hdr)
         g = axes_grid.ImageGrid(fig, 111,
                                 nrows_ncols=(n_species, n_cols),
-                                ngrids=None, direction='row', axes_pad=.02,
+                                ngrids=None, direction='row',
+                                axes_pad=[.5, .02],
                                 add_all=True, share_all=True,
-                                aspect=True, label_mode='L', cbar_mode=None,
+                                aspect=True, label_mode='L',
+                                cbar_mode='each', cbar_location='right',
+                                cbar_size='5%', cbar_pad='-5%',
                                 axes_class=(pywcsgrid2.Axes,
                                             dict(grid_helper=gh)))
 
-        for i, k in enumerate(self.emline.keys()):
+
+        for i, k in enumerate(sorted(self.emline.keys())):
             qpn = 2*i # quantity subplot number
             spn = 2*i + 1 # SNR subplot number
-            q_im = g[qpn].imshow(self.qty_maps[k], norm=colors.LogNorm(),
-                                 interpolation=None, origin='lower',
-                                 vmin=vr[self.qtype][0],
-                                 vmax=vr[self.qtype][1], cmap=cmap2)
-            s_im = g[spn].imshow(self.SNR_maps[k], norm=colors.LogNorm(),
-                                 vmin=0.5, vmax=20., interpolation=None,
-                                 origin='lower', cmap=cmap1)
 
-            s_c = g[qpn].contour(self.qty_maps[k], levels=[self.sn_t],
-                                 colors='r', linewidths=1.,
-                                 linestyles='-')
+            # create arrays to represent shown quantities
+            sa = np.ma.array(
+                self.qty_maps[k] * np.sqrt(self.ivar_maps[k]),
+                mask=(self.mask_maps[k] | (self.qty_maps[k] < 0)))
+            qa = np.ma.array(
+                self.qty_maps[k].data,
+                mask=sa.mask)
 
-            g[spn].contour(self.qty_maps[k], levels=[self.sn_t],
-                           colors='r', linewidths=1., linestyles='-')
+            q_im = g[qpn].imshow(
+                qa,
+                interpolation=None, origin='lower',
+                cmap=cmap2, norm=colors.LogNorm())
+            s_im = g[spn].imshow(
+                sa,
+                interpolation=None,
+                origin='lower', cmap=cmap1, norm=colors.LogNorm())
+
+            s_c = g[qpn].contour(
+                sa, levels=[self.sn_t,],
+                colors='r', linewidths=1.,
+                linestyles='-')
+
+            g[spn].contour(
+                sa, levels=[self.sn_t,],
+                colors='r', linewidths=1., linestyles='-')
 
             g[qpn].grid()
             g[spn].grid()
@@ -647,31 +405,189 @@ class DAP_elines(object):
                 center_pixel=tuple(t/2. for t in self.qty_maps[k].shape))
             g[qpn].add_inner_title('{}'.format(k.replace(
                 '-','')), loc=2, frameon=False)
+            # get rid of axes labels
+            g[qpn].set_xlabel('')
+            g[qpn].set_ylabel('')
+            g[spn].set_xlabel('')
+            g[spn].set_ylabel('')
 
-        qcb_ax = fig.add_axes([0.15, 0.935, 0.7, 0.0175])
-        scb_ax = fig.add_axes([0.15, 0.035, 0.7, 0.0175])
+            qcb = g.cbar_axes[qpn].colorbar(q_im)
+            qcb.set_label_text(r'{} [{}]'.format(
+                self.qtype, self.hdu[self.q].header['BUNIT'].replace(
+                    '^2', '$^2$')), size=8)
+            # configure quantity's colorbar
+            # define max and min over range within factor of 4 of max SNR
+            q_clims = [np.min(qa[sa >= 0.25*sa.max()]),
+                       np.max(qa[sa >= 0.25*sa.max()])]
+            dqt = int(np.log10(q_clims[-1]))
+            q_ticks = np.arange(
+                10.**dqt, q_clims[-1], 10.**dqt)
+            if len(q_ticks) < 2:
+                q_ticks = np.concatenate(
+                    [np.arange(1., 10., 1.) * 10.**(dqt-1) * np.ones(9),
+                     np.arange(1., 10., 1.) * 10.**dqt * np.ones(9),
+                     np.arange(1., 10., 1.) * 10.**(dqt+1) * np.ones(9)])
+            qcb.ax.set_yticks(q_ticks)
+            qcb.ax.set_yticklabels(q_ticks, size=8)
+            qcb.set_clim(q_clims)
+            qcb.ax.set_ylim(q_clims)
 
-        scb = fig.colorbar(s_im, cax=scb_ax, orientation='horizontal')
-        scb.set_label('S/N')
-        scb.add_lines(s_c)
-        scb.set_ticks([1., 2., 5., 10.])
+            scb = g.cbar_axes[spn].colorbar(s_im)
+            scb.set_label_text('SNR', size=8)
+            # configure SNR's colorbar
+            s_ticks = np.concatenate(
+                [np.arange(1., 10., 1.) * 10.**(-1.) * np.ones(9),
+                 np.arange(1., 10., 1.) * 10.**0. * np.ones(9),
+                 np.arange(1., 10., 1.) * 10.**(1.) * np.ones(9)])
+            s_clims = [0.5, scb.get_clim()[1]]
+            scb.ax.set_yticks(s_ticks)
+            scb.ax.set_yticklabels(s_ticks, size=8)
+            scb.set_clim(s_clims)
+            scb.ax.set_ylim(s_clims)
 
-        qcb = fig.colorbar(q_im, cax=qcb_ax, orientation='horizontal')
-        q = self.hdu[self.q].header['BUNIT'].replace('^2', '$^2$')
-        qcb.set_label(r'{} [{}]'.format(self.qtype, q))
-
+        plt.tight_layout()
+        plt.subplots_adjust(top=.95)
         plt.suptitle(objname)
 
         if save == False:
             plt.show()
         else:
-            plt.savefig('eline_map.png')
+            plt.savefig('{}{}_eline_map.png'.format(loc, objname))
+
+        plt.close()
+
+    def species_map(self, save=False, objname=None, loc=''):
+        # make quantity and SNR maps for each species
+        # mostly for QA purposes
+
+        import mpl_toolkits.axes_grid1.axes_grid as axes_grid
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+        from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+
+        cmap1 = plt.cm.cubehelix
+        cmap1.set_bad('gray')
+
+        cmap2 = plt.cm.Purples_r
+        cmap2.set_bad('gray')
+
+        n_species = len(self.lines_per_species) # number of rows of subplots
+        n_cols = 2 # col 1 for qty, col 2 for SNR
+        fig_dims = (3.*n_cols, 2.*n_species)
+
+        fig = plt.figure(figsize=fig_dims, dpi=300)
+        gh = pywcsgrid2.GridHelper(wcs=self.eline_hdr)
+        g = axes_grid.ImageGrid(fig, 111,
+                                nrows_ncols=(n_species, n_cols),
+                                ngrids=None, direction='row',
+                                axes_pad=[.5, .02],
+                                add_all=True, share_all=True,
+                                aspect=True, label_mode='L',
+                                cbar_mode='each', cbar_location='right',
+                                cbar_size='5%', cbar_pad='-5%',
+                                axes_class=(pywcsgrid2.Axes,
+                                            dict(grid_helper=gh)))
+
+        for i, k in enumerate(sorted(self.lines_per_species.keys())):
+            qpn = 2*i # quantity subplot number
+            spn = 2*i + 1 # SNR subplot number
+
+            # create arrays to represent shown quantities
+            sa = np.ma.array(
+                self.species_SNR_maps[k],
+                mask=(self.species_SNR_maps[k].mask | \
+                      (self.species_maps[k] < 0)))
+            qa = np.ma.array(
+                self.species_maps[k].data, mask=sa.mask)
+
+            q_im = g[qpn].imshow(
+                qa,
+                interpolation=None, origin='lower',
+                cmap=cmap2, norm=colors.LogNorm())
+            s_im = g[spn].imshow(
+                sa,
+                interpolation=None,
+                origin='lower', cmap=cmap1, norm=colors.LogNorm())
+
+            s_c = g[qpn].contour(
+                sa, levels=[0.5*self.sn_t, self.sn_t, 2.*self.sn_t],
+                colors='r', linewidths=1.,
+                linestyles=[':', '-', '-.'])
+
+            g[spn].contour(
+                sa, levels=[0.5*self.sn_t, self.sn_t, 2.*self.sn_t],
+                colors='r', linewidths=1.,
+                linestyles=[':', '-', '-.'])
+
+            g[qpn].grid()
+            g[spn].grid()
+            g[qpn].set_ticklabel_type(
+                'delta',
+                center_pixel=tuple(t/2. for t in self.species_maps[k].shape))
+            g[spn].set_ticklabel_type(
+                'delta',
+                center_pixel=tuple(t/2. for t in self.species_maps[k].shape))
+            g[qpn].add_inner_title('{}'.format(k), loc=2, frameon=False)
+            # get rid of axes labels
+            g[qpn].set_xlabel('')
+            g[qpn].set_ylabel('')
+            g[spn].set_xlabel('')
+            g[spn].set_ylabel('')
+
+            qcb = g.cbar_axes[qpn].colorbar(q_im)
+            qcb.set_label_text(r'{} [{}]'.format(
+                self.qtype, self.hdu[self.q].header['BUNIT'].replace(
+                    '^2', '$^2$')), size=8)
+            # configure quantity's colorbar
+            # define max and min over range within factor of 4 of max SNR
+            q_clims = [np.min(qa[sa >= 0.25*sa.max()]),
+                       np.max(qa[sa >= 0.25*sa.max()])]
+            dqt = int(np.log10(q_clims[-1]))
+            q_ticks = np.arange(
+                10.**dqt, q_clims[-1], 10.**dqt)
+            if len(q_ticks) < 2:
+                q_ticks = np.concatenate(
+                    [np.arange(1., 10., 1.) * 10.**(dqt-1) * np.ones(9),
+                     np.arange(1., 10., 1.) * 10.**dqt * np.ones(9),
+                     np.arange(1., 10., 1.) * 10.**(dqt+1) * np.ones(9)])
+            qcb.ax.set_yticks(q_ticks)
+            qcb.ax.set_yticklabels(q_ticks, size=8)
+            qcb.set_clim(q_clims)
+            qcb.ax.set_ylim(q_clims)
+
+            scb = g.cbar_axes[spn].colorbar(s_im)
+            scb.set_label_text('SNR', size=8)
+            # configure SNR's colorbar
+            s_ticks = np.concatenate(
+                [np.arange(1., 10., 1.) * 10.**(-1.) * np.ones(9),
+                 np.arange(1., 10., 1.) * 10.**0. * np.ones(9),
+                 np.arange(1., 10., 1.) * 10.**(1.) * np.ones(9)])
+            s_clims = [0.5, scb.get_clim()[1]]
+            scb.ax.set_yticks(s_ticks)
+            scb.ax.set_yticklabels(s_ticks, size=8)
+            scb.set_clim(s_clims)
+            scb.ax.set_ylim(s_clims)
+
+        plt.tight_layout()
+        plt.subplots_adjust(top=.95)
+        plt.suptitle('\n'.join((objname, 'SNR: {}'.format(self.sn_t))))
+
+        if save == False:
+            plt.show()
+        else:
+            plt.savefig('{}{}_species_map.png'.format(loc, objname))
 
         plt.close()
 
     def to_BPT(self):
         # convenience method: returns a dict of lines, that you can
         # double-splat into BPT.__init__() below
+        if not 'FLUX' in self.qtype:
+            em = '{} is illegal -- try \'SLFUX\' or \'GFLUX\' (pref)'.format(
+                self.qtype)
+            raise ValueError(em)
+        elif self.qtype != 'GFLUX':
+            raise Warning('\'GFLUX\' is probably a better choice!')
+
         ldata = {'Ha': self.qty_maps['Ha-----6564'],
                  'Hb': self.qty_maps['Hb-----4862'],
                  'OIII': self.qty_maps['OIII---4960'] + \
@@ -681,10 +597,33 @@ class DAP_elines(object):
                  'SII': self.qty_maps['SII----6732'] + \
                     self.qty_maps['SII----6718'],
                  'OI': self.qty_maps['OI-----6302'] + \
-                    self.qty_maps['OI-----6365']}
+                    self.qty_maps['OI-----6365'],
+                 'qtype': self.qtype}
 
         return ldata
 
+    def to_BPT_SNRmask(self):
+        if not 'FLUX' in self.qtype:
+            em = '{} is illegal -- try \'SLFUX\' or \'GFLUX\' (pref)'.format(
+                self.qtype)
+            raise ValueError(em)
+        elif self.qtype != 'GFLUX':
+            raise Warning('\'GFLUX\' is probably a better choice!')
+
+        # set up machine eps to add to weights
+        # (alleviates intolerance for nonzero weights)
+        eps = np.finfo(float).eps
+
+        snmask = {
+            'Ha_SNRm': self.species_SNR_maps['Ha'] > self.sn_t,
+            'Hb_SNRm': self.species_SNR_maps['Hb'] > self.sn_t,
+            'OIII_SNRm': self.species_SNR_maps['OIII'] > self.sn_t,
+            'OII_SNRm': self.species_SNR_maps['OII'] > self.sn_t,
+            'NII_SNRm': self.species_SNR_maps['NII'] > self.sn_t,
+            'SII_SNRm': self.species_SNR_maps['SII'] > self.sn_t,
+            'OI_SNRm': self.species_SNR_maps['OI'] > self.sn_t}
+
+        return snmask
 
 class BPT(object):
     '''
@@ -702,7 +641,8 @@ class BPT(object):
         2 for composite, 3 for Seyfert, 4 for LI(N)ER.
     '''
 
-    def __init__(self, Ha, Hb, OIII, NII, SII, OI):
+    def __init__(self, Ha, Hb, OIII, NII, SII, OI, qtype, Ha_SNRm,
+                 Hb_SNRm, OIII_SNRm, NII_SNRm, OI_SNRm, SII_SNRm, **kwargs):
 
         '''
         SF:
@@ -728,6 +668,9 @@ class BPT(object):
             - below Seyfert-LI(N)ER line in [SII]/Ha vs [OIII]/Hb
             - below Seyfert-LI(N)ER line in [OI]/Ha vs [OIII]/Hb
 
+        computes class where at least one of the lines considered in a
+        particular scheme is known-good (this should be filtered down
+        further for actual science)
         '''
 
         self.Ka03_cs = {'NII_Ha': {'u': 0.61, 'v': -0.05, 'w': 1.3, 'l': -.1}}
@@ -737,102 +680,100 @@ class BPT(object):
         self.Sf_L_cs = {'SII_Ha': {'m': 1.89, 'b': 0.76},
                         'OI_Ha': {'m': 1.18, 'b': 1.3}}
 
-        self.SII_Ha = np.ma.array(np.log10(SII/Ha),
-                                  mask=(Ha.mask | SII.mask))
-        self.NII_Ha = np.ma.array(np.log10(NII/Ha),
-                                  mask=(Ha.mask | NII.mask))
-        self.OI_Ha = np.ma.array(np.log10(OI/Ha),
-                                 mask=(Ha.mask | OI.mask))
-        self.OIII_Hb = np.ma.array(np.log10(OIII/Hb),
-                                   mask=(OIII.mask | Hb.mask))
+        self.qtype = qtype
 
-        # product of conditions for SF classification
-        SF = (~self.Ka03_decision(self.NII_Ha, self.OIII_Hb,
-            **self.Ka03_cs['NII_Ha']))
-        SF *= (~self.Ke01_decision(
-            self.SII_Ha, self.OIII_Hb,
-            **self.Ke01_cs['SII_Ha']))
-        SF *= (~self.Ke01_decision(
-            self.OI_Ha, self.OIII_Hb,
-            **self.Ke01_cs['OI_Ha']))
+        # set mask arrays (measurements have to be bad for both to be masked)
+
+        self.SII_Ha = np.ma.array(
+            np.log10(SII/Ha),
+            mask=(Ha.mask | SII.mask | (~Ha_SNRm & ~SII_SNRm)))
+        self.NII_Ha = np.ma.array(
+            np.log10(NII/Ha),
+            mask=(Ha.mask | NII.mask | (~Ha_SNRm & ~NII_SNRm)))
+        self.OI_Ha = np.ma.array(
+            np.log10(OI/Ha),
+            mask=(Ha.mask | OI.mask | (~Ha_SNRm)))
+        self.OIII_Hb = np.ma.array(
+            np.log10(OIII/Hb),
+            mask=(OIII.mask | Hb.mask | (~Hb_SNRm & ~OIII_SNRm)))
+
+        # compute over NII_Ha first
+        SF_NII_Ha = ~self.Ka03_decision(self.NII_Ha, self.OIII_Hb,
+                                        **self.Ka03_cs['NII_Ha'])
+        comp_NII_Ha = (self.Ka03_decision(self.NII_Ha, self.OIII_Hb,
+                                          **self.Ka03_cs['NII_Ha'])) * \
+                      (~self.Ke01_decision(self.NII_Ha, self.OIII_Hb,
+                                           **self.Ke01_cs['NII_Ha'])) * \
+                      (self.NII_Ha < 0.25)
+        # "nuclear"-dominated must be neither SF nor composite
+        nuc_NII_Ha = ~(SF_NII_Ha | comp_NII_Ha)
+        class_NII_Ha = np.argmax(
+            np.stack((np.zeros_like(SF_NII_Ha), SF_NII_Ha, comp_NII_Ha, nuc_NII_Ha, np.zeros_like(SF_NII_Ha))), axis=0)
+        self.class_NII_Ha = np.ma.array(
+            class_NII_Ha, mask=(self.NII_Ha.mask | self.OIII_Hb.mask))
+
+        # compute over SII_Ha
+        SF_SII_Ha = ~self.Ke01_decision(self.SII_Ha, self.OIII_Hb,
+                                        **self.Ke01_cs['SII_Ha'])
+        AGN_SII_Ha = (self.Ke01_decision(self.SII_Ha, self.OIII_Hb,
+                                        **self.Ke01_cs['SII_Ha'])) & \
+                     (self.AGN_LIER_decision(self.SII_Ha, self.OIII_Hb,
+                                             **self.Sf_L_cs['SII_Ha']))
+        LIER_SII_Ha = ~(SF_SII_Ha | AGN_SII_Ha)
+        class_SII_Ha = np.argmax(
+            np.stack((np.zeros_like(SF_SII_Ha), SF_SII_Ha,
+                       np.zeros_like(SF_SII_Ha), AGN_SII_Ha,
+                      LIER_SII_Ha)), axis=0)
+        self.class_SII_Ha = np.ma.array(
+            class_SII_Ha, mask=self.SII_Ha.mask)
+
+        # compute over OI_Ha
+        SF_OI_Ha = (~self.Ke01_decision(self.OI_Ha, self.OIII_Hb,
+                                        **self.Ke01_cs['OI_Ha'])) & \
+                   (self.OI_Ha < -.75)
+        AGN_OI_Ha = (self.Ke01_decision(self.OI_Ha, self.OIII_Hb,
+                                       **self.Ke01_cs['OI_Ha'])) & \
+                    (self.AGN_LIER_decision(self.OI_Ha, self.OIII_Hb,
+                                            **self.Sf_L_cs['OI_Ha']))
+        LIER_OI_Ha = ~(SF_OI_Ha | AGN_OI_Ha)
+        class_OI_Ha = np.argmax(
+            np.stack((np.zeros_like(SF_OI_Ha), SF_OI_Ha,
+                      np.zeros_like(SF_OI_Ha), AGN_OI_Ha,
+                      LIER_OI_Ha)), axis=0)
+        self.class_OI_Ha = np.ma.array(
+            class_OI_Ha, mask=self.OI_Ha.mask)
+
+        ## decide where everything agrees
+
         self.SF = np.ma.array(
-            SF,
+            SF_NII_Ha * SF_SII_Ha * SF_OI_Ha,
             mask=(self.SII_Ha.mask | self.NII_Ha.mask | \
                   self.OI_Ha.mask | self.OIII_Hb.mask))
 
-        # product of conditions for composite
-        comp = (self.Ka03_decision(
-            self.NII_Ha, self.OIII_Hb,
-            **self.Ka03_cs['NII_Ha']))
-        comp *= (~self.Ke01_decision(
-            self.NII_Ha, self.OIII_Hb,
-            **self.Ke01_cs['NII_Ha']))
-        comp *= (~self.Ke01_decision(
-            self.SII_Ha, self.OIII_Hb,
-            **self.Ke01_cs['SII_Ha']))
-        comp *= (~self.Ke01_decision(
-            self.OI_Ha, self.OIII_Hb,
-            **self.Ke01_cs['OI_Ha'])) & (self.OI_Ha < -.7)
         self.comp = np.ma.array(
-            comp,
-            mask=(self.NII_Ha.mask | self.OIII_Hb.mask))
+            comp_NII_Ha * SF_SII_Ha * SF_OI_Ha,
+            mask=(self.SII_Ha.mask | self.NII_Ha.mask | \
+                  self.OI_Ha.mask | self.OIII_Hb.mask))
 
-        # product of conditions for AGN
-        AGN = (self.Ke01_decision(
-            self.NII_Ha, self.OIII_Hb,
-            **self.Ke01_cs['NII_Ha']))
-        AGN *= (self.Ke01_decision(
-            self.SII_Ha, self.OIII_Hb,
-            **self.Ke01_cs['SII_Ha']))
-        AGN *= (self.Ke01_decision(
-            self.OI_Ha, self.OIII_Hb,
-            **self.Ke01_cs['OI_Ha']))
-        AGN *= self.AGN_LIER_decision(
-            self.SII_Ha, self.OIII_Hb,
-            **self.Sf_L_cs['SII_Ha'])
-        AGN *= self.AGN_LIER_decision(
-            self.OI_Ha, self.OIII_Hb,
-            **self.Sf_L_cs['OI_Ha'])
         self.AGN = np.ma.array(
-            AGN,
+            nuc_NII_Ha * AGN_SII_Ha * AGN_OI_Ha,
             mask=(self.SII_Ha.mask | self.NII_Ha.mask | \
                   self.OI_Ha.mask | self.OIII_Hb.mask))
 
-        # product of conditions for LI(N)ERs
-        LIER = (self.Ke01_decision(
-            self.NII_Ha, self.OIII_Hb,
-            **self.Ke01_cs['NII_Ha']))
-        LIER *= (self.Ke01_decision(
-            self.SII_Ha, self.OIII_Hb,
-            **self.Ke01_cs['SII_Ha']))
-        LIER *= (self.Ke01_decision(
-            self.OI_Ha, self.OIII_Hb,
-            **self.Ke01_cs['OI_Ha']))
-        LIER *= ~self.AGN_LIER_decision(
-            self.SII_Ha, self.OIII_Hb,
-            **self.Sf_L_cs['SII_Ha'])
-        LIER *= ~self.AGN_LIER_decision(
-            self.OI_Ha, self.OIII_Hb,
-            **self.Sf_L_cs['OI_Ha'])
         self.LIER = np.ma.array(
-            LIER,
+            nuc_NII_Ha * AGN_SII_Ha * AGN_OI_Ha,
             mask=(self.SII_Ha.mask | self.NII_Ha.mask | \
                   self.OI_Ha.mask | self.OIII_Hb.mask))
 
-        # ambiguous galaxies are zero in all of SF, comp, AGN, and LIER
         stack_class = np.stack((self.SF, self.comp, self.AGN, self.LIER))
-        self.ambig = np.logical_not(np.any(stack_class, axis=0))
-        self.ambig = np.ma.array(
-            self.ambig,
-            mask=(self.SII_Ha.mask | self.NII_Ha.mask | \
-                  self.OI_Ha.mask | self.OIII_Hb.mask))
 
-        self.stack_class = np.stack(
-            (self.ambig, self.SF, self.comp, self.AGN, self.LIER))
+        self.ambig = ~(self.SF | self.comp | self.AGN | self.LIER)
+
         self.diag = np.argmax(
             np.stack(
                 (self.ambig, self.SF, self.comp, self.AGN, self.LIER)),
             axis=0)
+
         self.diag = np.ma.array(
             self.diag, mask=(self.SII_Ha.mask | self.NII_Ha.mask | \
                              self.OI_Ha.mask | self.OIII_Hb.mask))
@@ -874,32 +815,52 @@ class BPT(object):
         '''
         return y > m * x + b
 
-    def plot(self, save=False, objname=None):
+    def map_plot_ind(self, h, dep, objname, save=False, loc=''):
+        '''
+        make BPT plots with each of the schemes,
+        accompanied by a map in each of the schemes
+        '''
+        qtype = self.qtype
+
+        # should mask low-SNR spaxels, but don't want to do that
+        # without thinking about how (need to get it from the DAP obj)
+        plt.close('all')
+
+        fig = plt.figure(figsize=(9, 6), dpi=300)
+
+        # scatter plots on top
+        NII_ax = plt.subplot(231)
+        SII_ax = plt.subplot(232)
+        OI_ax = plt.subplot(233)
+
+        # colors and labels
         cs = ['gray', 'blue', 'green', 'red', 'orange']
-        ls = ['ambig.', 'SF', 'comp.', 'AGN', 'LIER']
-        fig = plt.figure(dpi=300, figsize=(10, 5))
-        gs = gridspec.GridSpec(
-            nrows=1, ncols=3, left=0.1, bottom=0.25, right=0.95, top=0.95,
-            wspace=0.05, hspace=0., width_ratios=[1, 1, 1])
+        ls = ['ambig.', 'SF', 'comp.', 'AGN/Nuc.', 'LIER']
 
-        NII_ax = plt.subplot(gs[0])
-        SII_ax = plt.subplot(gs[1])
-        OI_ax = plt.subplot(gs[2])
+        # same concept as above
+        for i in range(1, 5):
+            NII_ax.scatter(
+                self.NII_Ha[self.class_NII_Ha == i],
+                self.OIII_Hb[self.class_NII_Ha == i],
+                edgecolor='None', facecolor=cs[i], label = ls[i],
+                marker='.', alpha=0.5)
+            SII_ax.scatter(
+                self.SII_Ha[self.class_SII_Ha == i],
+                self.OIII_Hb[self.class_SII_Ha == i],
+                edgecolor='None', facecolor=cs[i], label = ls[i],
+                marker='.', alpha=0.5)
+            OI_ax.scatter(
+                self.OI_Ha[self.class_OI_Ha == i],
+                self.OIII_Hb[self.class_OI_Ha == i],
+                edgecolor='None', facecolor=cs[i], label = ls[i],
+                marker='.', alpha=0.5)
 
-        # plot data on each set of axes
-        for (ax, qty) in zip([NII_ax, SII_ax, OI_ax],
-                             [self.NII_Ha, self.SII_Ha, self.OI_Ha]):
-            for i in range(5):
-                ax.scatter(
-                    qty[self.diag == c], self.OIII_Hb[self.diag == c],
-                    edgecolor='None', facecolor=cs[i], label = ls[i],
-                    marker='.', alpha=0.5)
-
-        # plot the Ke01 (extreme starburst) line on all three axes
+        # set up convenience grids
         NII_Ha_grid = np.linspace(-2., 1., 200)
         SII_Ha_grid = np.linspace(-1.25, 0.75, 200)
         OI_Ha_grid = np.linspace(-2.25, 0., 200)
 
+        # plug grids in to get Ke01 lines
         Ke01_line_NII = self.Ke01_(
             NII_Ha_grid, **self.Ke01_cs['NII_Ha'])
         Ke01_line_SII = self.Ke01_(
@@ -907,11 +868,12 @@ class BPT(object):
         Ke01_line_OI = self.Ke01_(
             OI_Ha_grid, **self.Ke01_cs['OI_Ha'])
 
+        # plot the Ke01 (extreme starburst) line on all three axes
         NII_ax.plot(
             NII_Ha_grid[NII_Ha_grid < 0.4],
             Ke01_line_NII[NII_Ha_grid < 0.4],
             linestyle='-', c='k',
-            label='Extr. S-B lim. (Ke01)', marker='')
+            marker='')
         SII_ax.plot(
             SII_Ha_grid[SII_Ha_grid < 0.1],
             Ke01_line_SII[SII_Ha_grid < 0.1],
@@ -919,52 +881,45 @@ class BPT(object):
         OI_ax.plot(
             OI_Ha_grid[OI_Ha_grid < -.7],
             Ke01_line_OI[OI_Ha_grid < -.7],
-            linestyle='-', c='k', marker='')
+            linestyle='-', c='k', label='Extr. S-B \nlim. (Ke01)',
+            marker='')
 
-        # plot the Ka03 (pure SF) line on NII axes where it's less than Ka01
+        # get Ka03 line for NII
         Ka03_line_NII = self.Ka03_(
             NII_Ha_grid, **self.Ka03_cs['NII_Ha'])
+
+        # plot the Ka03 (pure SF) line on NII axes where it's less than Ka01
         NII_ax.plot(
             NII_Ha_grid[(Ka03_line_NII < Ke01_line_NII) * \
                              (NII_Ha_grid < 0.4)],
             Ka03_line_NII[(Ka03_line_NII < Ke01_line_NII) * \
                           (NII_Ha_grid < 0.4)],
-            linestyle='--', c='k', marker='',
-            label='Pure SF lim. (Ka03)')
+            linestyle='--', c='k', marker='')
 
-        # plot the AGN-LIER line on SII & OI axes where it's more than Ka01
-        NII_ax.plot([-5., -10.], [-10., -10.],
-                    linestyle='-.', c='k', marker='', label='AGN-LIER')
+        # dummy Ka03 plot on OI, for legend
+        OI_ax.plot(
+            [-3., -4.], [-2., -3.],
+            linestyle='--', c='k', marker='',
+            label='Pure SF \nlim. (Ka03)')
+
+        # get the AGN-LIER line for SII and OI
         Sf_L_line_SII = self.AGN_LIER_(SII_Ha_grid, **self.Sf_L_cs['SII_Ha'])
+        Sf_L_line_OI = self.AGN_LIER_(OI_Ha_grid, **self.Sf_L_cs['OI_Ha'])
+
+        # plot the AGN-LIER line on SII & OI axes where it's more than Ka01\
         SII_ax.plot(
             SII_Ha_grid[(Sf_L_line_SII > Ke01_line_SII) |
                              (SII_Ha_grid > 0.1)],
             Sf_L_line_SII[(Sf_L_line_SII > Ke01_line_SII) |
                           (SII_Ha_grid > 0.1)],
-            linestyle='-.', c='k', marker='', label='AGN-LIER')
-        Sf_L_line_OI = self.AGN_LIER_(OI_Ha_grid, **self.Sf_L_cs['OI_Ha'])
+            linestyle='-.', c='k', marker='')
+
         OI_ax.plot(
             OI_Ha_grid[(Sf_L_line_OI > Ke01_line_OI) |
                             (OI_Ha_grid > -0.9)],
             Sf_L_line_OI[(Sf_L_line_OI > Ke01_line_OI) |
                          (OI_Ha_grid > -0.9)],
-            linestyle='-.', c='k', marker='')
-
-        # scatter plot of spaxels
-        diag_scatter = NII_ax.scatter(
-            self.NII_Ha, self.OIII_Hb, c=self.diag, edgecolor='None',
-            marker='.', cmap=self.cmap, norm=self.norm, vmin=0., vmax=4.)
-        SII_ax.scatter(
-            self.SII_Ha, self.OIII_Hb, c=self.diag, edgecolor='None',
-            marker='.', cmap=self.cmap, norm=self.norm, vmin=0., vmax=4.)
-        OI_ax.scatter(
-            self.OI_Ha, self.OIII_Hb, c=self.diag, edgecolor='None',
-            marker='.', cmap=self.cmap, norm=self.norm, vmin=0., vmax=4.)
-        '''cbar = fig.colorbar(diag_scatter, cax=cbar_ax)
-        cbar.set_ticks([0., 1., 2., 3., 4])
-        cbar.set_ticklabels(['UND.', 'SF', 'Comp.', 'AGN', 'LIER'])
-        cbar.ax.tick_params(labelsize=10, length=0)
-        cbar_ax = fig.add_axes([0.925, 0.1, 0.025, 0.8])'''
+            linestyle='-.', c='k', marker='', label='AGN-LIER')
 
         # fix axes limits and scales
         NII_ax.set_ylim([-1.25, 1.5])
@@ -976,65 +931,716 @@ class BPT(object):
         SII_ax.set_xlim([-1.25, 0.75])
         OI_ax.set_xlim([-2.25, 0.])
 
-        NII_ax.legend(loc='lower center', prop={'size': 11},
-                      ncol=4, bbox_to_anchor=(1.5, -0.35, 0.1, 3.))
+        # set up legend for OI axis, and move it to the empty space to right
+        OI_ax.legend(loc='lower center', prop={'size': 10},
+                     ncol=1, bbox_to_anchor=(1.4, 0.2, 0.4, 1.))
 
+        # make scatter plot axes labels
         NII_ax.set_ylabel(
-            r'$\log{\frac{\mathrm{EW(OIII)}}{\mathrm{EW(H\beta)}}}$',
-            size=14)
+            r'$\log{\frac{\mathrm{%s(OIII)}}{\mathrm{%s(H\beta)}}}$' \
+                % (qtype, qtype), size=14)
         NII_ax.set_xlabel(
-            r'$\log{\frac{\mathrm{EW(NII)}}{\mathrm{EW(H\alpha)}}}$',
-            size=14)
+            r'$\log{\frac{\mathrm{%s(NII)}}{\mathrm{%s(H\alpha)}}}$' \
+                % (qtype, qtype), size=14)
         SII_ax.set_xlabel(
-            r'$\log{\frac{\mathrm{EW(SII)}}{\mathrm{EW(H\alpha)}}}$',
-            size=14)
+            r'$\log{\frac{\mathrm{%s(SII)}}{\mathrm{%s(H\alpha)}}}$' \
+                % (qtype, qtype), size=14)
         OI_ax.set_xlabel(
-            r'$\log{\frac{\mathrm{EW(OI)}}{\mathrm{EW(H\alpha)}}}$',
+            r'$\log{\frac{\mathrm{%s(OI)}}{\mathrm{%s(H\alpha)}}}$' \
+                % (qtype, qtype), size=14)
+
+        NII_ax.tick_params(axis='both', labelsize=10)
+        SII_ax.tick_params(axis='both', labelsize=10)
+        OI_ax.tick_params(axis='both', labelsize=10)
+
+        # BPT maps on bottom
+        NII_Ha_map = pywcsgrid2.subplot(234, header=h)
+        SII_Ha_map = pywcsgrid2.subplot(235, header=h)
+        OI_Ha_map = pywcsgrid2.subplot(236, header=h)
+
+        for ax, t in zip(
+            [NII_Ha_map, SII_Ha_map, OI_Ha_map],
+            ['NII-Ha', 'SII-Ha', 'OI-Ha']):
+            ax.set_ticklabel_type(
+                'delta',
+                center_pixel=tuple(t/2. for t in self.diag.shape))
+            ax.axis['bottom'].major_ticklabels.set(fontsize=10)
+            ax.axis['left'].major_ticklabels.set(fontsize=10)
+            # add beam
+            bs = 2.*u.arcsec/(h['CDELT1'] * h['PC1_1'] * u.deg)
+            ax.add_beam_size(bs, bs, 0., loc=1)
+            ax.tick_params(axis='both', colors='w')
+            ax.grid()
+            ax.add_inner_title(t, loc=2, frameon=False)
+            ax.yaxis.label.set_size(10.)
+            ax.xaxis.label.set_size(10.)
+
+            if dep is not None:
+                ctr = ax.contour(
+                    dep.d, levels=[.5, 1., 2., 3.], colors='k',
+                    zorder=2)
+                ax[dep.w].clabel(ctr, fmt=r'%1.1f $R_{eff}$', fontsize=6,
+                                 c='k')
+
+        # make BPT maps in individual schemes
+        # for the time being, they're masked above 3 Re,
+        # but in the long-run this should be done with SNR
+        NII_Ha_map.imshow(
+            np.ma.array(
+                self.class_NII_Ha, mask=dep.d > 3.),
+            origin='lower', aspect='equal',
+            interpolation='None', cmap=self.cmap, norm=self.norm,
+            vmin=0., vmax=4., zorder=1)
+        SII_Ha_map.imshow(
+            np.ma.array(
+                self.class_SII_Ha, mask=dep.d > 3.),
+            origin='lower', aspect='equal',
+            interpolation='None', cmap=self.cmap, norm=self.norm,
+            vmin=0., vmax=4., zorder=1)
+        im = OI_Ha_map.imshow(
+            np.ma.array(
+                self.class_OI_Ha, mask=dep.d > 3.),
+            origin='lower', aspect='equal',
+            interpolation='None', cmap=self.cmap, norm=self.norm,
+            vmin=0., vmax=4., zorder=1)
+        SII_Ha_map.set_ylabel('')
+        OI_Ha_map.set_ylabel('')
+
+        # colorbar axis takes up the bottom right
+        cb_ax = fig.add_axes([0.775, 0.1, 0.2, 0.025])
+        cbar = fig.colorbar(im, cax=cb_ax, orientation='horizontal')
+        cbar.set_ticks([0., 1., 2., 3., 4])
+        cbar.set_ticklabels(['UND.', 'SF', 'Comp.', 'AGN/\nNuc.', 'LIER'])
+        cbar.ax.tick_params(labelsize=9, length=0)
+
+        plt.subplots_adjust(
+            left=.1, right=.75, bottom=.05, top=.925,
+            wspace=.15, hspace=.175)
+
+        # set up field image
+        f_im_ax = fig.add_axes([0.79, 0.25, 0.20, 0.30])
+        s = .05
+        f_im = gz2.download_sloan_im(
+            h['CRVAL1'], h['CRVAL2'], scale=s,
+            width=40./s, height=40./s, verbose=False,)
+        f_im_ax.imshow(
+            f_im[::-1], extent=[-20., 20., -20., 20.], aspect='equal')
+        f_im_ax.tick_params(labelsize=9)
+        f_im_ax.set_xticks([-10., 0., 10.])
+        f_im_ax.set_yticks([-10., 0., 10.])
+        fmt = '%.0f"'
+        tks = mtick.FormatStrFormatter(fmt)
+        f_im_ax.xaxis.set_major_formatter(tks)
+        f_im_ax.yaxis.set_major_formatter(tks)
+        f_im_ax.grid(color='gray')
+
+        plt.suptitle(objname)
+
+        if save == False:
+            plt.show()
+        else:
+            plt.savefig('{}{}_bpt_map_plot_ind.png'.format(loc, objname))
+
+
+ifu_dims = {127: 32., 91: 27., 61: 22., 37: 17., 19: 12., 7: 7.}
+
+class deproject(object):
+    def __init__(self, hdu, drpall_row, plot=False, verbose=False):
+        '''
+        given a fits header, construct an array of wcs coordinates
+        then use a given phi & i to deproject
+        '''
+
+        objcoords = coords.SkyCoord(ra=drpall_row['objra']*u.deg,
+                                    dec=drpall_row['objdec']*u.deg,
+                                    frame='fk5')
+
+        ifucoords = coords.SkyCoord(ra=drpall_row['ifura']*u.deg,
+                                    dec=drpall_row['ifudec']*u.deg,
+                                    frame='fk5')
+
+        ifudesignsize = drpall_row['ifudesignsize']
+        ifu_r = ifu_dims[ifudesignsize] / 3600. / 2.
+
+        ba_min = .13
+
+        incl = np.arccos(
+            np.sqrt(
+                (drpall_row['nsa_ba']**2. - ba_min**2.)/(1 - ba_min**2.)))
+        incl *= 180./np.pi
+
+        phi = drpall_row['nsa_phi']
+        phi, incl = phi*np.pi/180., incl*np.pi/180.
+        ba = drpall_row['nsa_ba']
+        Re = drpall_row['nsa_petro_th50_el']
+        self.Re = Re
+        objra = objcoords.ra.deg
+        objdec = objcoords.dec.deg
+        self.plateifu = drpall_row['plateifu']
+        if verbose == True:
+            print drpall_row['plateifu']
+            print '\t', drpall_row['ifucoords'].to_string()
+            print '\t', 'phi:', phi, '\n\ti:', incl, '\n\tb/a:', ba
+
+        ifura = ifucoords.ra.deg
+        ifudec = ifucoords.dec.deg
+
+        w = wcs.WCS(hdu.header).dropaxis(2)
+        self.w = w
+        XX, YY = np.meshgrid(
+            np.arange(hdu.header['NAXIS1']),
+            np.arange(hdu.header['NAXIS2']))
+        im_coords = np.stack((XX.flatten(), YY.flatten())).T
+        # transform image coordinates into WCS,
+        # and then divide by an eff. rad.
+        # finally rotate the reference frame to align with major axis
+        world = w.wcs_pix2world(im_coords, 0)
+        world = world.reshape(XX.shape[0], -1, 2)
+        rot_m = np.array(
+            [[np.cos(phi), -np.sin(phi)],
+             [np.sin(phi), np.cos(phi)]])
+        rot_m_r = np.linalg.pinv(rot_m)
+        dfromc = ((world - np.array([objra, objdec]))*3600./Re)
+
+        v = 5.*np.array([[0., 0.], [0., 1.]])/3600.
+        maj_a = v.dot(rot_m_r)
+        min_a = maj_a.dot(
+            np.array([[np.cos(-np.pi/2), -np.sin(-np.pi/2)],
+                      [np.sin(-np.pi/2), np.cos(-np.pi/2)]]))
+
+        # make two displacement matrices (both in x and y)
+        # first is displacement in direction of maj axis,
+        # second is displacement in direction of minor axis
+        # then multiply second by cos(incl) or something
+        # sum, and add result in quadrature along axes
+        #
+        # see http://math.oregonstate.edu/home/programs/undergrad/CalculusQuestStudyGuides/vcalc/dotprod/dotprod.html
+        # where `a` is maj ax or min ax vector
+        # and `b` is a generic, single displacement vector.
+
+        d1 = np.inner(maj_a[1], dfromc)/np.linalg.norm(maj_a[1])
+        d1 = (d1/np.linalg.norm(maj_a[1]))[:, :, np.newaxis] * maj_a[1]
+        d2 = np.inner(min_a[1], dfromc)/np.linalg.norm(min_a[1])
+        d2 = (d2/np.linalg.norm(min_a[1]))[:, :, np.newaxis] * min_a[1]
+        d2 /= (np.cos(incl))
+
+        d = np.sqrt(((d1 + d2)**2.).sum(axis=-1))
+
+        a2tv = np.arccos(
+            np.inner(dfromc, maj_a[1])/ \
+                (np.linalg.norm(maj_a[1]) * np.linalg.norm(dfromc, axis=-1)))
+
+        self.ifura, self.ifudec = ifura, ifudec
+        self.ifu_r = ifu_r
+        self.objra, self.objdec = objra, objdec
+        self.world = world
+        self.d = d
+        self.ba = ba
+        self.maj_a, self.min_a = maj_a, min_a
+        self.v = v
+        self.incl = incl
+        self.phi = phi
+
+    def __repr__(self):
+        return 'MaNGA DAP deproject object @ {} w/ i = {}, phi = {}'.format(
+            (self.objra, self.objdec), self.incl, self.phi)
+
+    def plot(self, save=True, loc=''):
+        plt.close('all')
+        fig = plt.figure(figsize=(5, 4), dpi=300)
+
+        ax = plt.subplot(111)
+
+        wn = hn = 2400. # can't go any higher
+        s = 0.02
+        img = gz2.download_sloan_im(
+            ra=self.ifura, dec=self.ifudec, scale=s,
+            width=wn, height=hn, verbose=False)
+        ax.imshow(
+            img[::-1, :],
+            extent=[self.ifura + wn*s/3600./2, self.ifura - wn*s/3600./2,
+                    self.ifudec - hn*s/3600./2, self.ifudec + hn*s/3600./2],
+            interpolation='None', origin='lower')
+        ctr = ax.contour(
+            self.world[:, :, 0], self.world[:, :, 1],
+            self.d, levels=[0.5, 1., 2., 3.],
+            vmin=0.1, vmax=3., cmap='cool_r')
+        ax.clabel(ctr, fmt=r'%1.1f $R_{eff}$', fontsize=10)
+        # add outline of IFU footprint
+        ax.add_patch(
+            patches.RegularPolygon(
+                xy=(self.ifura, self.ifudec), numVertices=6,
+                radius=self.ifu_r, orientation=np.pi/6.,
+                edgecolor='purple', facecolor='None'))
+        ax.plot(
+            self.ifura + self.v[:, 0],
+            self.ifudec + self.v[:, 1],
+            c='b')
+        ax.plot(
+            self.ifura + self.maj_a[:, 0],
+            self.ifudec + self.maj_a[:, 1],
+            c='r')
+        ax.plot(
+            self.ifura + self.min_a[:, 0]*self.ba,
+            self.ifudec + self.min_a[:, 1]*self.ba,
+            c='c')
+        ax.set_aspect('equal')
+        plt.tight_layout()
+        if save == True:
+            plt.savefig('{}{}_deproject.png'.format(loc, self.plateifu))
+        else:
+            plt.show()
+
+def Zdiag_map(hdulist, objname, diag, save=True, loc=''):
+    # set up figure
+
+    Z_cmap = copy.copy(plt.cm.cubehelix)
+    Z_cmap.set_bad('gray')
+    Z_cmap.set_under('k')
+    Z_cmap.set_over('w')
+
+    hdu = hdulist[diag]
+    header = hdu.header
+    data = hdu.data
+    d14 = data[0]
+    d50 = data[1]
+    d86 = data[2]
+    mask = data[3]
+
+    med = np.ma.array(d50, mask=mask)
+    h16_84_w = np.ma.array(0.5 * np.abs(d86 - d14), mask=mask)
+
+    plt.close('all')
+    fig = plt.figure(figsize=(7, 4), dpi=300)
+
+    ax1 = pywcsgrid2.subplot(121, header=header)
+    ax2 = pywcsgrid2.subplot(122, header=header)
+
+    vmin = np.min(d14[~np.isnan(d14)])
+    vmax = np.max(d86[~np.isnan(d86)])
+    #print vmin, vmax
+
+    Zmap = ax1.imshow(
+        med, cmap=Z_cmap, vmin=vmin, vmax=vmax, aspect='equal')
+    Zemap = ax2.imshow(
+        h16_84_w, cmap=Z_cmap, vmin=0., vmax=np.max(h16_84_w), aspect='equal')
+
+    ax1.set_ticklabel_type(
+        'delta',
+        center_pixel=tuple(t/2. for t in d14.shape))
+    ax1.axis['bottom'].major_ticklabels.set(fontsize=10)
+    ax1.axis['left'].major_ticklabels.set(fontsize=10)
+    ax1.tick_params(axis='both', colors='w')
+    ax1.grid()
+    ax1.yaxis.label.set_size(10.)
+    ax1.xaxis.label.set_size(10.)
+
+    ax2.set_ticklabel_type(
+        'delta',
+        center_pixel=tuple(t/2. for t in d14.shape))
+    ax2.axis['bottom'].major_ticklabels.set(fontsize=10)
+    ax2.axis['left'].major_ticklabels.set(fontsize=10)
+    ax2.tick_params(axis='both', colors='w')
+    ax2.grid()
+    ax2.yaxis.label.set_size(10.)
+    ax2.xaxis.label.set_size(10.)
+
+    plt.tight_layout()
+    plt.subplots_adjust(left=0.1125, right=0.95, top=0.925, bottom=.275)
+    Zcax = fig.add_axes([.05, .1125, .425, .05])
+    Zecax = fig.add_axes([.55, .1125, .425, .05])
+    Zcax.tick_params(labelsize=8)
+    Zecax.tick_params(labelsize=8)
+
+    plt.colorbar(
+        Zmap, cax=Zcax, orientation='horizontal', extend='both').set_label(
+        label=r'$Z_{50}$', size=8)
+    plt.colorbar(
+        Zemap, cax=Zecax, orientation='horizontal', extend='both').set_label(
+        label=r'$\frac{1}{2}(Z_{84}-Z_{16})$', size=8)
+
+    plt.suptitle(r'{}: {}'.format(objname, diag.replace('_', '\_')))
+
+    if save == True:
+        plt.savefig('{}{}-Z-{}.png'.format(loc, objname, diag))
+    else:
+        plt.show()
+
+class gas_surf_dens(object):
+    '''
+    estimate a galaxy's gas mass, optical depth, and DGR, per-spaxel
+        based on Brinchmann+13 method
+
+    Both EBV (B-V color excess) and OH (oxygen abundance) must be (4 x N x N),
+        where N is the number of spaxels on each side of the MaNGA datacube.
+
+    the 4th (N x N) slice of both EBV and OH is a mask. The result will
+        combine the masks, and mask any spaxel where the
+        quoted, median metallicity is < 8.6. The first three slices correspond
+        to the 14th, 50th, and 86th percentile metallicities (resulting
+        from pyMCZ simulations). Since all functions are monotonic,
+        the resultant gas mass estimates should be identical percentiles
+
+    results are somewhat dependent on your religious choice of
+        solar (O/H) and Z. Default values are taken from
+        Asplund 2009 (arXiv 0909:0948v1)
+    '''
+    def __init__(self, hdulist, objname, diag, R_V=3.1, OH_sol=8.69,
+                 Z_sol=.0134, **kwargs):
+
+        self.EBV = hdulist['E(B-V)'].data
+        self.OH = hdulist[diag].data
+        self.hdulist = hdulist
+        OH = self.OH
+        EBV = self.EBV
+        self.diag = diag
+        self.R_V = R_V
+        self.objname = objname
+
+        for k, v in kwargs.iteritems():
+            setattr(self, k, v)
+
+        if (OH.shape[0] != 4) or (len(OH.shape) != 3):
+            raise ValueError('OH must have shape (4 x 4 x N)')
+        if (EBV.shape[0] != 4) or (len(EBV.shape) != 3):
+            raise ValueError('EBV must have shape (4 x 4 x N)')
+
+        SIGMA_gas = np.empty_like(OH)
+        Z = np.empty_like(OH)
+        xi = np.empty_like(OH)
+        tau_V = np.empty_like(OH)
+
+        Z[:3, :, :] = 10.**(OH[:3, :, :] - OH_sol) * Z_sol
+        xi[:3, :, :] = 10.**(-4.45 + 0.43 * OH[:3, :, :])
+        tau_V[:3, :, :] = R_V * EBV[:3, :, :] / 1.086
+        SIGMA_gas[:3, :, :] = 0.2 * \
+            (tau_V[:3, :, :] / (xi[:3, :, :] * Z[:3, :, :]))
+
+        mask = ((EBV[3, :, :].astype(bool)) | (OH[3, :, :].astype(bool)) | \
+            (OH[1, :, :] <= 8.6))
+        for a in [SIGMA_gas, xi, tau_V, Z]:
+            a[3, :, :] = mask
+
+        self.SIGMA_gas = SIGMA_gas
+        self.Z = Z
+        self.xi = xi
+        self.tau_V = tau_V
+        self.mask = mask
+
+    def __repr__(self):
+        return 'gas_surf_dens object ({}), {} good spaxels'.format(
+            self.objname, (mask == 0).sum())
+
+    def make_fig(self, dep, save=True, loc=''):
+        '''
+        make map of gas mass surface density, and radial dependence thereof
+
+        requires a deprojection object to be generated previously (can use
+            header metadata from read in Zsample file--any hdu but 0)
+        '''
+
+        # set up colormap to use
+        cmap = copy.copy(plt.cm.cubehelix_r)
+        cmap.set_bad('gray', 0.)
+        cmap.set_under('w')
+        cmap.set_over('k')
+
+        # size of qty array
+        s = self.OH[1].shape
+
+        # minimum and maximum SIGMA values
+        logSmin, logSmax = -1, 2.75
+
+        diag = self.diag
+        header = self.hdulist[diag].header
+        plt.close('all')
+        fig = plt.figure(figsize=(8, 8), dpi=300)
+
+        # set up maps and plot axes
+        gs = gridspec.GridSpec(
+            4, 2, height_ratios=[2, .35, .2, 1.5], width_ratios=[1, 1])
+
+        # axes for OH & xi map
+        OH_map_ax = pywcsgrid2.subplot(gs[0, 0], header=header)
+        OH_map_ax.add_inner_title('EL-derived abundance', loc=4,
+                                  prop={'size': 8})
+        OH_map_ax.add_inner_title('dust-to-metal mass ratio', loc=1,
+                                  prop={'size': 8})
+        # axes for SIGMA map
+        S_map_ax = pywcsgrid2.subplot(gs[0, 1], header=header)
+        S_map_ax.add_inner_title('Gas mass surface density', loc=1,
+                                 prop={'size': 8})
+        # axes for image of galaxy
+        gal_im_ax = plt.subplot(gs[-1, 0])
+
+        OH_map_cax = fig.add_axes([.05, .4675, .425, .035])
+
+        # fix maps axes
+        for ax in [OH_map_ax, S_map_ax]:
+            ax.set_ticklabel_type(
+                'delta',
+                center_pixel=tuple(t/2. for t in self.OH[1].shape))
+
+            ax.axis['bottom'].major_ticklabels.set(fontsize=10)
+            ax.axis['left'].major_ticklabels.set(fontsize=10)
+            ax.tick_params(axis='both', colors='w')
+            ax.grid()
+            ax.set_xlabel('')
+            ax.set_ylabel('')
+            ax.set_aspect('equal')
+            ax.add_patch(patches.Rectangle(
+                (-s[0], -s[1]), 2*s[0], 2*s[1],
+                linewidth=0, fill=None, hatch=' / ', zorder=0))
+
+        ## start working on Z/xi map axes
+        OH_clims = np.array([8.6, 9.2])
+        OH_map = OH_map_ax.imshow(
+            np.ma.array(self.OH[1], mask=self.mask), cmap=cmap,
+            vmin=OH_clims[0], vmax=OH_clims[1])
+        # OH colorbar
+        OH_map_cb = plt.colorbar(OH_map, cax=OH_map_cax,
+                                 orientation='horizontal')
+        OH_map_cb.ax.tick_params(labelsize=12)
+        OH_map_cbar_tick_locator = mtick.MaxNLocator(nbins=5)
+        OH_map_cb.locator = OH_map_cbar_tick_locator
+        OH_map_cb.update_ticks()
+        OH_map_cb.set_label(
+            label=r'$12 + \log{\frac{O}{H}}$',
             size=14)
 
-        if objname is not None:
-            plt.suptitle('{} BPT'.format(objname))
+        # xi colorbar
+        xi_clims = -4.45 + 0.43 * OH_clims
+        xi_map_cax = OH_map_cax.twiny()
+        xi_map_cax.set_xlim(xi_clims)
+        xi_map_cax.xaxis.set_tick_params(labelsize=12)
+        xi_map_cbar_tick_locator = mtick.MultipleLocator(base=0.1)
+        xi_map_cax.xaxis.set_major_locator(xi_map_cbar_tick_locator)
+        xi_map_cax.set_xlabel(r'$\log{\xi}$', size=14)
 
-        if save == False:
-            plt.show()
+        # axes for radial SIGMA
+        S_R_ax = plt.subplot(gs[-2:, 1])
+        S_R_ax.set_ylabel(
+            r'$\log{\frac{\Sigma_{gas}}{\mathrm{M_{\odot}} ' + \
+            '\mathrm{pc^{-2}}}}$')
+        S_R_ax.set_xlabel(r'$\log{\frac{R}{R_e}}$')
+        # plot radial SIGMA
+        r = dep.d.flatten()
+        S = np.ma.array(
+            self.SIGMA_gas[1, :, :], mask=self.mask).flatten()
+        S_R_ax.scatter(
+            np.log10(r), np.log10(S), marker='.', alpha=0.8,
+            facecolor='k', edgecolor='None')
+        S_R_ax.set_ylim([logSmin, logSmax])
+        # plot radial abundance
+        OH_R_ax = S_R_ax.twinx()
+        OH = np.ma.array(self.OH[1, :, :], mask=self.mask)
+        OH_R_ax.scatter(
+            np.log10(r), OH.flatten(), marker='.', alpha=0.8,
+            facecolor='g', edgecolor='None')
+        OH_R_ax.set_ylim(OH_clims)
+        OH_R_ax.set_ylabel(r'$12 + \log{\frac{O}{H}}$', color='g')
+        S_R_ax.set_xlim([-1.1, 0.6])
+
+        ## galaxy image
+        imscale = np.abs(header['CDELT1'] * header['PC1_1'] * 3600.)
+        wn = header['NAXIS1']
+        hn = header['NAXIS2']
+        f = 20
+        im = gz2.download_sloan_im(
+            ra=header['CRVAL1'], dec=header['CRVAL2'],
+            scale=imscale/f, width=wn*f, height=hn*f, verbose=False)
+        gal_im_ax.imshow(
+            im[::-1, :, :],
+            extent=[- wn*imscale/2., wn*imscale/2.,
+                    - hn*imscale/2., hn*imscale/2.],
+            aspect='equal', zorder=1)
+        gal_im_ax.set_xticks([-10, 0, 10])
+        gal_im_ax.set_yticks([-10, 0, 10])
+
+        gal_im_ax.add_patch(
+            patches.RegularPolygon(
+                xy=(0, 0), numVertices=6,
+                radius=dep.ifu_r*3600, orientation=np.pi/6.,
+                edgecolor='purple', facecolor='None', zorder=3))
+
+        ## SIGMA map axes
+        S_map = S_map_ax.imshow(
+            np.log10(
+                np.ma.array(self.SIGMA_gas[1], mask=self.mask)),
+            vmin=logSmin, vmax=logSmax)
+
+        S_map_cax = fig.add_axes([.55, .5175, .4, .035])
+        S_map_cb = plt.colorbar(
+            S_map, cax=S_map_cax,
+            orientation='horizontal', extend='both')
+        S_map_cb.ax.tick_params(labelsize=12)
+        S_map_cbar_tick_locator = mtick.MaxNLocator(nbins=5)
+        S_map_cb.locator = S_map_cbar_tick_locator
+        S_map_cb.update_ticks()
+        S_map_cb.set_label(
+            label=r'$\log{\frac{\Sigma_{gas}}{\mathrm{M_{\odot}} ' + \
+                '\mathrm{pc^{-2}}}}$',
+            size=12)
+
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.95)
+
+        plt.suptitle('{} ({})'.format(self.objname, self.diag.replace(
+            '_', '\_')))
+
+        if save == True:
+            plt.savefig('{}{}-SIGMA-{}.png'.format(
+                loc, self.objname, self.diag))
         else:
-            plt.savefig('bpt.png')
-
-        plt.close()
-
-    def map(self, h, save=False, objname=None):
-        '''
-        make a BPT map of an ifu
-        '''
-
-        fig = plt.figure(figsize=(5, 4), dpi=300)
-        ax = pywcsgrid2.subplot(111, header=h)
-
-        im = ax.imshow(
-            self.diag, origin='lower', aspect='equal', interpolation='None',
-            cmap=self.cmap, norm=self.norm, vmin=0., vmax=4.)
-        cbar = plt.colorbar(im)
-        cbar.set_ticks([0., 1., 2., 3., 4])
-        cbar.set_ticklabels(['UND.', 'SF', 'Comp.', 'AGN', 'LIER'])
-        cbar.ax.tick_params(labelsize=9, length=0)
-        ax.set_ticklabel_type(
-            'delta',
-            center_pixel=tuple(t/2. for t in self.diag.shape))
-        # add beam
-        bs = 2.*u.arcsec/(h['CDELT1'] * h['PC1_1'] * u.deg)
-        ax.add_beam_size(bs, bs, 0., loc=1)
-        ax.tick_params(axis='both', colors='w')
-        ax.grid()
-        plt.subplots_adjust(bottom=0.125, left=0.2, top=0.95, right=0.95)
-
-        if objname is not None:
-            plt.suptitle('{} BPT'.format(objname))
-
-        #plt.tight_layout()
-
-        if save == False:
             plt.show()
-        else:
-            plt.savefig('bpt_map.png')
 
-        plt.close()
+    def SFR(self, Ha, drpall_row, plot=False, save=True, loc=''):
+        '''
+        estimate SFR from uncorrected Ha and dust extinction
+        '''
+
+        from astropy.cosmology import WMAP9 as cosmo
+
+        Ha_mask = Ha.mask
+        Ha = Ha.data
+        # angular and physical (on-galaxy) spaxel sizes
+        spaxel_asize = 0.25 * u.arcsec**2.
+        spaxel_psize = spaxel_asize / (cosmo.arcsec_per_kpc_proper(
+            drpall_row['nsa_zdist']))**2.
+
+        Ha_f = Ha * np.exp(self.tau_V[1]) * u.Unit('1e-17 erg s^-1 cm^-2')
+        Ha_f /= spaxel_psize
+        dist = (drpall_row['nsa_zdist'] * c.c / cosmo.H(0)).to(u.cm)
+        Ha_L = (4 * np.pi * Ha_f * dist**2.).to(u.Unit('erg s^-1 kpc^-2'))
+        Ha_L_SFR_conv = 7.9e-42 * u.Unit('solMass yr^-1 s erg^-1')
+        sfr = Ha_L_SFR_conv * Ha_L
+        sfr, sfr_u = np.ma.array(
+            sfr.value, mask=(Ha_mask | self.tau_V[-1].astype(bool))), \
+            sfr.unit
+        self.sfr, self.sfr_u = sfr, sfr_u
+
+        if plot == True:
+            plt.close('all')
+
+            s = sfr.shape
+
+            # set up colormap to use
+            cmap = copy.copy(plt.cm.cubehelix_r)
+            cmap.set_bad('gray', 0.)
+            cmap.set_under('w')
+            cmap.set_over('k')
+
+            diag = self.diag
+            header = self.hdulist[diag].header
+            plt.close('all')
+            fig = plt.figure(figsize=(6, 3), dpi=300)
+
+            # axes for SFR map
+
+            gs = gridspec.GridSpec(1, 2, width_ratios=[3, 2])
+            SFR_map_ax = pywcsgrid2.subplot(gs[0], header=header)
+            SFR_map_ax.add_patch(patches.Rectangle(
+                (-s[0], -s[1]), 2*s[0], 2*s[1],
+                linewidth=0, fill=None, hatch=' / ', zorder=0))
+
+            SFR_map_ax.set_ticklabel_type(
+                'delta',
+                center_pixel=tuple(t/2. for t in self.sfr.shape))
+            SFR_map_ax.axis['bottom'].major_ticklabels.set(fontsize=10)
+            SFR_map_ax.axis['left'].major_ticklabels.set(fontsize=10)
+            SFR_map_ax.tick_params(axis='both', colors='w')
+            SFR_map_ax.grid()
+            SFR_map_ax.yaxis.label.set_size(10.)
+            SFR_map_ax.xaxis.label.set_size(10.)
+            SFR_map_ax.set_xlabel('')
+            SFR_map_ax.set_ylabel('')
+
+            vmin = -3 if (np.min(np.log10(sfr) < -3.)) else np.min(
+                np.log10(sfr))
+            el = True if (np.min(np.log10(sfr) < -3.)) else False
+            vmax = -3 if (np.max(np.log10(sfr) > 3.)) else np.max(
+                np.log10(sfr))
+            eu = True if (np.max(np.log10(sfr) > 3.)) else False
+
+            if el and eu:
+                extend = 'both'
+            elif el:
+                extend = 'lower'
+            elif eu:
+                extend = 'upper'
+            else:
+                extend = 'neither'
+
+            SFR_map = SFR_map_ax.imshow(
+                np.log10(sfr), cmap=cmap, aspect='equal',
+                vmin=vmin, vmax=vmax)
+            SFR_cb = plt.colorbar(
+                SFR_map, orientation='vertical', extend=extend)
+            SFR_cb.set_label(
+                r'$\log{\Sigma_{SFR}}$' + \
+                r'[{}]'.format(sfr_u.to_string('latex')),
+                fontsize=8)
+            SFR_cb.ax.tick_params(labelsize=8)
+
+            # axes for SFR-SIGMA plot
+            SFR_SIGMA_ax = plt.subplot(gs[1])
+            S_masked = np.ma.array(
+                self.SIGMA_gas[1], mask=self.SIGMA_gas[-1])
+            data  = np.row_stack(
+                [self.SIGMA_gas[1].flatten(), self.sfr.flatten()])
+            mask = np.empty_like(data[1], dtype=bool)
+            mask = ((self.SIGMA_gas[-1].flatten().astype(bool)) | \
+                          (data[0] < 10**-0.5) | (data[0] > 10.**5.) | \
+                          (data[1] < 10.**-4) | (data[1] > 10.**3.))
+            S_masked = data[0][~mask]
+            sfr_masked = data[1][~mask]
+
+            SFR_SIGMA_ax.set_xlabel(
+                r'$\log{\Sigma_{gas}} [\frac{M_{\odot}}{\mathrm{pc}^{2}}]$',
+                size=10)
+            SFR_SIGMA_ax.set_ylabel(r'$\log{\Sigma_{SFR}}$ ' + \
+                r'[{}]'.format(
+                self.sfr_u.to_string('latex')),
+                size=10)
+
+            SFR_SIGMA_ax.scatter(
+                np.log10(S_masked),
+                np.log10(sfr_masked), marker='.',
+                facecolor='k', edgecolor='None', label='spaxels',
+                alpha=0.4)
+            SFR_SIGMA_ax.tick_params(axis='both', labelsize=8.)
+            xll = np.log10(S_masked).min() - .05
+            if xll < -0.5: xll = -0.5
+            xul = np.log10(S_masked).max() + .05
+            if xul > 5: xll = 5
+            yll = np.log10(sfr_masked).min() - .05
+            if yll < -4: yll = -4
+            yul = np.log10(sfr_masked).max() + .05
+            if yul > 3: yul = 3
+
+            pf = np.polyfit(
+                np.log10(S_masked),
+                np.log10(sfr_masked), deg=1)
+
+            Sgrid = np.linspace(-0.5, 5., 100)
+            Rgrid = np.polyval(pf, Sgrid)
+            fit_txt = 'N = {0:.2E}\nA = {1:.2E}'.format(pf[0], 10.**pf[1])
+            SFR_SIGMA_ax.plot(
+                Sgrid, Rgrid, linestyle='--',
+                label='K-S')
+            fig.text(0.5, 0.1, fit_txt, size=10)
+
+            SFR_SIGMA_ax.set_xlim([xll,xul])
+            SFR_SIGMA_ax.set_ylim([yll,yul])
+
+            plt.tight_layout()
+            plt.suptitle(r'{} H$\alpha$ SFR'.format(self.objname))
+            plt.subplots_adjust(top=0.9)
+
+            if save == True:
+                plt.savefig('{}{}-Ha_SFR.png'.format(
+                    loc, self.objname))
+            else:
+                plt.show()
+
+        return sfr, sfr_u

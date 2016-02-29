@@ -28,12 +28,13 @@ def download_sloan_im(ra, dec, scale, width=256, height=256, verbose=True):
 
     base_url = \
         'http://skyservice.pha.jhu.edu/DR12/ImgCutout/getjpeg.' + \
-        'aspx?opt=G&query=&Grid=on'
+        'aspx?opt=0'
     im_url = base_url + '&width=' + str(width) + '&height=' + \
         str(height) + '&scale=' + str(np.round(scale, 3)) + '&ra=' + \
         str(ra) + '&dec=' + str(dec)
 
-    #print im_url
+    if verbose == True:
+        print im_url
 
     im = urllib.urlopen(im_url)
     image_file = io.BytesIO(im.read())

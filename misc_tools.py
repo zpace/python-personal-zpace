@@ -36,3 +36,18 @@ class site_LST(object):
 
         for t_ in times:
             print t_.sidereal_time('apparent')
+
+def HDI_from_MCMC(posterior_samples, credible_mass):
+    # Computes highest density interval from a sample of representative values,
+    # estimated as the shortest credible interval
+    # Takes Arguments posterior_samples (samples from posterior)
+    # and credible mass (normally .95)
+    sorted_points = sorted(posterior_samples)
+    ciIdxInc = np.ceil(credible_mass * len(sorted_points)).astype('int')
+    nCIs = len(sorted_points) - ciIdxInc
+    ciWidth = [0]*nCIs
+    for i in range(0, nCIs):
+        ciWidth[i] = sorted_points[i + ciIdxInc] - sorted_points[i]
+        HDImin = sorted_points[ciWidth.index(min(ciWidth))]
+        HDImax = sorted_points[ciWidth.index(min(ciWidth))+ciIdxInc]
+    return (HDImin, HDImax)
