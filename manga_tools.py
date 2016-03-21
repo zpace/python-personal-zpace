@@ -12,7 +12,6 @@ from glob import glob
 from scipy.interpolate import interp1d
 from pysynphot import observation, spectrum
 from matplotlib import gridspec, colors
-from sklearn import gaussian_process as gp
 import matplotlib.ticker as mtick
 import pywcsgrid2
 import itertools
@@ -275,7 +274,7 @@ class DAP_elines(object):
         mask_extension = hdu[self.q].header['QUALDATA']
         ivar_extension = hdu[self.q].header['ERRDATA']
 
-        self.ivar_maps = {k: np.array(hdu[ivar_extension].data[v, :, :]*64.)
+        self.ivar_maps = {k: 64.*np.array(hdu[ivar_extension].data[v, :, :])
             for (k, v) in self.emline.iteritems()}
 
         self.qty_maps = {k: np.array(hdu[self.q].data[v, :, :])
@@ -327,7 +326,7 @@ class DAP_elines(object):
             # ivar maps
             self.species_ivar_maps[s] = np.ma.array(1./np.sum(
                 [1./self.ivar_maps[k] for k in ls],
-                axis=0), mask=self.species_mask_maps[s])*64.
+                axis=0), mask=self.species_mask_maps[s])
             # SNR maps
             self.species_SNR_maps[s] = np.ma.array(np.sqrt(
                 self.species_ivar_maps[s]) * self.species_maps[s],
@@ -590,14 +589,11 @@ class DAP_elines(object):
 
         ldata = {'Ha': self.qty_maps['Ha-----6564'],
                  'Hb': self.qty_maps['Hb-----4862'],
-                 'OIII': self.qty_maps['OIII---4960'] + \
-                    self.qty_maps['OIII---5008'],
-                 'NII': self.qty_maps['NII----6549'] + \
-                    self.qty_maps['NII----6585'],
+                 'OIII': self.qty_maps['OIII---5008'],
+                 'NII': self.qty_maps['NII----6585'],
                  'SII': self.qty_maps['SII----6732'] + \
                     self.qty_maps['SII----6718'],
-                 'OI': self.qty_maps['OI-----6302'] + \
-                    self.qty_maps['OI-----6365'],
+                 'OI': self.qty_maps['OI-----6302'],
                  'qtype': self.qtype}
 
         return ldata
@@ -610,9 +606,23 @@ class DAP_elines(object):
         elif self.qtype != 'GFLUX':
             raise Warning('\'GFLUX\' is probably a better choice!')
 
-        # set up machine eps to add to weights
-        # (alleviates intolerance for nonzero weights)
-        eps = np.finfo(float).eps
+        snmask = {
+            'Ha_SNRm': self.species_SNR_maps['Ha'] > self.sn_t,
+            'Hb_SNRm': self.species_SNR_maps['Hb'] > self.sn_t,
+            'OIII_SNRm': self.SNR_maps['OIII---5008'] > self.sn_t,
+            'NII_SNRm': self.SNR_maps['NII----6585'] > self.sn_t,
+            'SII_SNRm': self.species_SNR_maps['SII'] > self.sn_t,
+            'OI_SNRm': self.SNR_maps['OI-----6302'] > self.sn_t}
+
+        return snmask
+
+    def species_SNRmask(self):
+        if not 'FLUX' in self.qtype:
+            em = '{} is illegal -- try \'SLFUX\' or \'GFLUX\' (pref)'.format(
+                self.qtype)
+            raise ValueError(em)
+        elif self.qtype != 'GFLUX':
+            raise Warning('\'GFLUX\' is probably a better choice!')
 
         snmask = {
             'Ha_SNRm': self.species_SNR_maps['Ha'] > self.sn_t,
@@ -1074,6 +1084,7 @@ class deproject(object):
         ba = drpall_row['nsa_ba']
         Re = drpall_row['nsa_petro_th50_el']
         self.Re = Re
+        self.zdist = drpall_row['nsa_zdist']
         objra = objcoords.ra.deg
         objdec = objcoords.dec.deg
         self.plateifu = drpall_row['plateifu']
@@ -1296,6 +1307,9 @@ class gas_surf_dens(object):
         self.diag = diag
         self.R_V = R_V
         self.objname = objname
+        self.OH_sol = OH_sol
+        self.OH_halfsol = self.OH_sol - 0.301
+        self.Z_sol = Z_sol
 
         for k, v in kwargs.iteritems():
             setattr(self, k, v)
@@ -1310,14 +1324,16 @@ class gas_surf_dens(object):
         xi = np.empty_like(OH)
         tau_V = np.empty_like(OH)
 
+        # define measured metallicity in terms of solar metallicity and
+        # oxygen abundance, assuming a constant oxygen-to-other-things
+        # scaling (O/Z)_sun = (O/Z)_universal
         Z[:3, :, :] = 10.**(OH[:3, :, :] - OH_sol) * Z_sol
         xi[:3, :, :] = 10.**(-4.45 + 0.43 * OH[:3, :, :])
         tau_V[:3, :, :] = R_V * EBV[:3, :, :] / 1.086
         SIGMA_gas[:3, :, :] = 0.2 * \
             (tau_V[:3, :, :] / (xi[:3, :, :] * Z[:3, :, :]))
 
-        mask = ((EBV[3, :, :].astype(bool)) | (OH[3, :, :].astype(bool)) | \
-            (OH[1, :, :] <= 8.6))
+        mask = ((EBV[3, :, :].astype(bool)) | (OH[3, :, :].astype(bool)))
         for a in [SIGMA_gas, xi, tau_V, Z]:
             a[3, :, :] = mask
 
@@ -1331,6 +1347,21 @@ class gas_surf_dens(object):
         return 'gas_surf_dens object ({}), {} good spaxels'.format(
             self.objname, (mask == 0).sum())
 
+    def to_kpc(self, dep, re_min_max, ang_scale=0.5*u.arcsec):
+
+        from astropy.cosmology import WMAP9 as cosmo
+
+        # angular and physical (on-galaxy) spaxel sizes
+        # [ang_scale] = arcsec
+        phys_scale = ang_scale / cosmo.arcsec_per_kpc_proper(
+            dep.zdist)
+
+        # dep.Re is arcseconds per effective radius along major axis
+        ang_min_max = (re_min_max * dep.Re) * u.arcsec
+        phys_min_max = ang_min_max / cosmo.arcsec_per_kpc_proper(
+            dep.zdist)
+        return phys_min_max.to('kpc').value
+
     def make_fig(self, dep, save=True, loc=''):
         '''
         make map of gas mass surface density, and radial dependence thereof
@@ -1342,19 +1373,14 @@ class gas_surf_dens(object):
         # set up colormap to use
         cmap = copy.copy(plt.cm.cubehelix_r)
         cmap.set_bad('gray', 0.)
-        cmap.set_under('w')
-        cmap.set_over('k')
 
         # size of qty array
         s = self.OH[1].shape
 
-        # minimum and maximum SIGMA values
-        logSmin, logSmax = -1, 2.75
-
         diag = self.diag
         header = self.hdulist[diag].header
         plt.close('all')
-        fig = plt.figure(figsize=(8, 8), dpi=300)
+        fig = plt.figure(figsize=(9, 8), dpi=300)
 
         # set up maps and plot axes
         gs = gridspec.GridSpec(
@@ -1373,7 +1399,7 @@ class gas_surf_dens(object):
         # axes for image of galaxy
         gal_im_ax = plt.subplot(gs[-1, 0])
 
-        OH_map_cax = fig.add_axes([.05, .4675, .425, .035])
+        OH_map_cax = fig.add_axes([.05, .465, .4, .035])
 
         # fix maps axes
         for ax in [OH_map_ax, S_map_ax]:
@@ -1393,9 +1419,13 @@ class gas_surf_dens(object):
                 linewidth=0, fill=None, hatch=' / ', zorder=0))
 
         ## start working on Z/xi map axes
-        OH_clims = np.array([8.6, 9.2])
+        #set effective lower limit at sol - 0.301 dex (50%)
+        OH_med = np.ma.array(self.OH[1], mask=self.mask)
+        OH_clims = np.array([self.OH_halfsol, 9.5])
+        if OH_med.min() < OH_clims[0]:
+            OH_clims[0] = OH_med.min()
         OH_map = OH_map_ax.imshow(
-            np.ma.array(self.OH[1], mask=self.mask), cmap=cmap,
+            OH_med, cmap=cmap,
             vmin=OH_clims[0], vmax=OH_clims[1])
         # OH colorbar
         OH_map_cb = plt.colorbar(OH_map, cax=OH_map_cax,
@@ -1422,24 +1452,50 @@ class gas_surf_dens(object):
         S_R_ax.set_ylabel(
             r'$\log{\frac{\Sigma_{gas}}{\mathrm{M_{\odot}} ' + \
             '\mathrm{pc^{-2}}}}$')
-        S_R_ax.set_xlabel(r'$\log{\frac{R}{R_e}}$')
-        # plot radial SIGMA
-        r = dep.d.flatten()
-        S = np.ma.array(
-            self.SIGMA_gas[1, :, :], mask=self.mask).flatten()
-        S_R_ax.scatter(
-            np.log10(r), np.log10(S), marker='.', alpha=0.8,
-            facecolor='k', edgecolor='None')
+        S_R_ax.set_xlabel(r'$\frac{R}{R_e}$')
+        # specify plot bounds, not implemented until later
+        Rmin, Rmax = -.05, np.max(np.ma.array(dep.d, mask=self.mask)) + .05
+        logSmin, logSmax = -1., 2.75
+        # minimum and maximum SIGMA values
         S_R_ax.set_ylim([logSmin, logSmax])
-        # plot radial abundance
+        S_R_ax.set_xlim([Rmin, Rmax])
+
+        S_Rphys_ax = S_R_ax.twiny()
+        S_Rphys_ax.set_xlim(self.to_kpc(dep, np.array([Rmin, Rmax])))
+        S_Rphys_ax.set_xlabel(r'R [kpc]')
+
+        r = np.ma.array(
+            dep.d,
+            mask=(self.mask | (OH_med < self.OH_halfsol)) ).flatten()
+
+        ## plot radial abundance
         OH_R_ax = S_R_ax.twinx()
-        OH = np.ma.array(self.OH[1, :, :], mask=self.mask)
+        OH = np.ma.array(self.OH[1, :, :], mask=self.mask).flatten()
+        OH16 = np.ma.array(self.OH[0, :, :], mask=self.mask).flatten()
+        OH84 = np.ma.array(self.OH[2, :, :], mask=self.mask).flatten()
+        OH_e = np.ma.abs(np.ma.row_stack([OH16, OH84]) - OH)
+
         OH_R_ax.scatter(
-            np.log10(r), OH.flatten(), marker='.', alpha=0.8,
-            facecolor='g', edgecolor='None')
+            r, OH,
+            marker='.', facecolor='g', edgecolor='None', alpha=0.8)
         OH_R_ax.set_ylim(OH_clims)
         OH_R_ax.set_ylabel(r'$12 + \log{\frac{O}{H}}$', color='g')
-        S_R_ax.set_xlim([-1.1, 0.6])
+        OH_R_ax.tick_params(axis='y', colors='g')
+        OH_R_ax.set_xlim([Rmin, Rmax])
+        ## plot radial SIGMA
+        S = np.ma.array(
+            self.SIGMA_gas[1, :, :],
+            mask=(self.mask | (OH_med < self.OH_halfsol)) ).flatten()
+        S16 = np.ma.array(
+            self.SIGMA_gas[0, :, :],
+            mask=(self.mask | (OH_med < self.OH_halfsol)) ).flatten()
+        S84 = np.ma.array(
+            self.SIGMA_gas[2, :, :],
+            mask=(self.mask | (OH_med < self.OH_halfsol)) ).flatten()
+        Se = np.ma.abs(np.ma.row_stack([S16, S84]) - S)
+        S_R_ax.scatter(
+            r, np.log10(S),
+            marker='.', facecolor='k', edgecolor='None', alpha=0.8)
 
         ## galaxy image
         imscale = np.abs(header['CDELT1'] * header['PC1_1'] * 3600.)
@@ -1469,10 +1525,10 @@ class gas_surf_dens(object):
                 np.ma.array(self.SIGMA_gas[1], mask=self.mask)),
             vmin=logSmin, vmax=logSmax)
 
-        S_map_cax = fig.add_axes([.55, .5175, .4, .035])
+        S_map_cax = fig.add_axes([.8875, .5175, .035, .45])
         S_map_cb = plt.colorbar(
             S_map, cax=S_map_cax,
-            orientation='horizontal', extend='both')
+            orientation='vertical', extend='both')
         S_map_cb.ax.tick_params(labelsize=12)
         S_map_cbar_tick_locator = mtick.MaxNLocator(nbins=5)
         S_map_cb.locator = S_map_cbar_tick_locator
@@ -1482,8 +1538,8 @@ class gas_surf_dens(object):
                 '\mathrm{pc^{-2}}}}$',
             size=12)
 
-        plt.tight_layout()
-        plt.subplots_adjust(top=0.95)
+        #plt.tight_layout()
+        plt.subplots_adjust(top=0.95, left=.1, hspace=.15, right=0.95)
 
         plt.suptitle('{} ({})'.format(self.objname, self.diag.replace(
             '_', '\_')))
@@ -1491,6 +1547,73 @@ class gas_surf_dens(object):
         if save == True:
             plt.savefig('{}{}-SIGMA-{}.png'.format(
                 loc, self.objname, self.diag))
+        else:
+            plt.show()
+
+    def reddening(self, save=True, loc=''):
+
+        # set up colormap to use
+        cmap = copy.copy(plt.cm.cubehelix_r)
+        cmap.set_bad('gray', 0.)
+
+        # size of qty array
+        s = self.OH[1].shape
+
+        diag = self.diag
+        header = self.hdulist[diag].header
+
+        plt.close('all')
+
+        fig = plt.figure(figsize=(4, 5))
+
+        gs = gridspec.GridSpec(2, 1, height_ratios=[15, 1])
+        ax = pywcsgrid2.subplot(gs[0, 0], header=header)
+        ax.set_ticklabel_type(
+            'delta',
+            center_pixel=tuple(t/2. for t in self.OH[1].shape))
+
+        ax.axis['bottom'].major_ticklabels.set(fontsize=10)
+        ax.axis['left'].major_ticklabels.set(fontsize=10)
+        ax.tick_params(axis='both', colors='w')
+        ax.grid()
+        ax.set_xlabel('')
+        ax.set_ylabel('')
+        ax.set_aspect('equal')
+        ax.add_patch(patches.Rectangle(
+            (-s[0], -s[1]), 2*s[0], 2*s[1],
+            linewidth=0, fill=None, hatch=' / ', zorder=0))
+
+        tau_map_cax = plt.subplot(gs[1, 0])
+
+        tau_map = ax.imshow(
+            np.ma.array(self.tau_V[1, :, :], mask=self.mask), vmin=0.,
+            cmap=cmap)
+        tau_map_cb = plt.colorbar(
+            tau_map, orientation='horizontal', cax=tau_map_cax)
+        tau_map_cb.ax.tick_params(labelsize=12)
+        tau_map_cb_tick_locator = mtick.MaxNLocator(nbins=5)
+        tau_map_cb.locator = tau_map_cb_tick_locator
+        tau_map_cb.update_ticks()
+        tau_map_cb.set_label(
+            label=r'$\tau_{V}$', size=14)
+
+        tau_clims = np.array([tau_map_cb.vmin, tau_map_cb.vmax])
+        EBV_clims = tau_clims * 1.086 / self.R_V
+        EBV_map_cax = tau_map_cax.twiny()
+        EBV_map_cax.set_xlim(EBV_clims)
+        EBV_map_cax.xaxis.set_tick_params(labelsize=12)
+        EBV_map_cbar_tick_locator = mtick.MultipleLocator(base=0.25)
+        EBV_map_cax.xaxis.set_major_locator(EBV_map_cbar_tick_locator)
+        EBV_map_cax.set_xlabel(r'$E(B-V)$', size=12)
+
+        ax.set_aspect('equal')
+        plt.suptitle(r'{} Extinction'.format(self.objname))
+        plt.subplots_adjust(
+            hspace=.3, bottom=.1, top=.95, left=.1, right=.95)
+
+        if save == True:
+                plt.savefig('{}{}-reddening.png'.format(
+                    loc, self.objname))
         else:
             plt.show()
 
@@ -1618,18 +1741,6 @@ class gas_surf_dens(object):
             yul = np.log10(sfr_masked).max() + .05
             if yul > 3: yul = 3
 
-            pf = np.polyfit(
-                np.log10(S_masked),
-                np.log10(sfr_masked), deg=1)
-
-            Sgrid = np.linspace(-0.5, 5., 100)
-            Rgrid = np.polyval(pf, Sgrid)
-            fit_txt = 'N = {0:.2E}\nA = {1:.2E}'.format(pf[0], 10.**pf[1])
-            SFR_SIGMA_ax.plot(
-                Sgrid, Rgrid, linestyle='--',
-                label='K-S')
-            fig.text(0.5, 0.1, fit_txt, size=10)
-
             SFR_SIGMA_ax.set_xlim([xll,xul])
             SFR_SIGMA_ax.set_ylim([yll,yul])
 
@@ -1644,3 +1755,19 @@ class gas_surf_dens(object):
                 plt.show()
 
         return sfr, sfr_u
+
+def radial_gradient(x, y, yuerr, ylerr, regr='linear',
+                    corr='squared_exponential'):
+
+    from sklearn import gaussian_process as gp
+
+    X = np.atleast_2d(x.compressed()).T
+    nugget = np.average(
+        np.row_stack(
+            [ylerr.compressed(), yuerr.compressed()]), axis=0)
+    nugget = (nugget / y.compressed())**2.
+    GP = gp.GaussianProcess(
+        regr=regr, corr=corr, nugget=nugget)
+    GP.fit(X, y.compressed())
+
+    return GP
