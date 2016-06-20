@@ -65,11 +65,11 @@ def conroy_to_table(fname):
         but there are {}'.format(len(l), len(nL))
 
     # now restrict the wavelength range to a usable interval
-    lgood = ((1500. * u.AA <= l) * (l <= 1.1 * u.micron))
+    lgood = ((3000. * u.AA <= l) * (l <= 10500. * u.AA))
     l = l[lgood]
 
     # log-transform
-    logl = np.log(l / u.Angstrom)
+    logl = np.log10(l / u.AA)
 
     dlogl = np.mean(logl[1:] - logl[:-1])
     CRVAL1 = logl[0]
@@ -176,7 +176,7 @@ def make_conroy_file(loc, plot=False, Zll=.05, Zul=99.,
 
     # define all the header keywords you'll need for the fits file
 
-    h = {'CTYPE3': 'ln age/Gyr',
+    h = {'CTYPE3': 'log10 age/Gyr',
          'CRVAL3': np.min(logT),
          'NAXIS3': nT,
          'CDELT3': np.abs(np.mean(logT[:-1] - logT[1:])),
@@ -184,7 +184,7 @@ def make_conroy_file(loc, plot=False, Zll=.05, Zul=99.,
          'CRVAL2': np.min(Zs),
          'NAXIS2': nZ,
          'CDELT2': np.abs(np.mean(Zs[:-1] - Zs[1:])),
-         'CTYPE1': 'ln lambda/AA',
+         'CTYPE1': 'log10 lambda/AA',
          'CRVAL1': np.min(logL),
          'NAXIS1': nL,
          'CDELT1': np.abs(np.mean(logL[:-1] - logL[1:])),
@@ -198,10 +198,6 @@ def make_conroy_file(loc, plot=False, Zll=.05, Zul=99.,
             Tcond = (SSPs['age'] == Ts[i])
             spectrum = SSPs[Zcond * Tcond]['spectrum']
             SSPs_cube[i, j, :] = spectrum[0][Lconds]
-
-    h['BSCALE'] = np.median(SSPs_cube)
-    SSPs_cube /= h['BSCALE']
-    print h
 
     print 'SSP cube constructed'
     hdu = fits.PrimaryHDU(SSPs_cube)
