@@ -1,3 +1,11 @@
+'''
+some tools for working with astronomical spectra
+'''
+
+import numpy as np
+
+from astropy import units as u, constants as c
+
 def D4000_index(l, s):
     '''
     compute D4000 index
@@ -40,3 +48,22 @@ def HdA_index(l, s):
 
     EW = (1. - s[(l > line[0]) * (l < line[-1])]/F_c) * dl
     return EW
+
+def shift_to_rest_roll(v, dlogl=None):
+    '''
+    return number of pixels of roll needed to cancel out doppler shift
+    '''
+    if dlogl is None:
+        dlogl = np.round(np.mean(logl[1:] - logl[:-1]), 8)
+
+    z = (v/c.c).to('').value
+    npix = -int(np.rint(z/dlogl))
+    return npix
+
+def shift_to_rest(logl, v):
+    '''
+    apply a constant velocity offset to a log-wavelength grid
+    (i.e., DE-redshift the grid)
+    '''
+    z = (v/c.c).to('').value
+    return logl - z
