@@ -1,18 +1,25 @@
 import numpy as np
+
 import astropy
 import astropy.table as table
 import astropy.io.fits as fits
+from astropy.wcs import WCS
+from astropy import units as u, constants as c, coordinates as coords, wcs
+
 import pandas as pd
 import os
 import re
+
 from matplotlib import rcParams, pyplot as plt, patches
-from astropy.wcs import WCS
-from astropy import units as u, constants as c, coordinates as coords, wcs
+
 from glob import glob
+
 from scipy.interpolate import interp1d
 from pysynphot import observation, spectrum
+
 from matplotlib import gridspec, colors
 import matplotlib.ticker as mtick
+
 import pywcsgrid2
 import itertools
 import gz2tools as gz2
@@ -31,6 +38,15 @@ mangaspec_base_url = base_url + 'mangawork/manga/spectro/redux/'
 
 #c = 299792.458 #km/s
 H0 = 70. #km/s/Mpc
+
+# =====
+# units
+# =====
+
+# Maggy (SDSS flux unit)
+Mgy = u.def_unit(
+    s='Mgy', represents=3631.*u.Jy,
+    doc='SDSS flux unit', prefixes=True)
 
 def get_drpall_val(fname, qtys, plateifu):
     drpall = table.Table.read(fname)
@@ -235,9 +251,26 @@ def target_data(hdu):
 
     return objra, objdec, cenra, cendec, mangaID
 
+class DAP_IFU_DNE_Error(Exception):
+    '''
+    DAP IFU does not exist
+    '''
+    def __init__(self, plate, ifu):
+        self.plate = plate
+        self.ifu = ifu
+
+    def __str__(self):
+        return 'plateifu {}-{} DNE in the given location!'.format(
+            self.plate, self.ifu)
+
 def read_dap_ifu(plate, ifu):
-    hdu = fits.open('{0}{1}/mangadap-{1}-{2}-default.fits.gz'.format(
-        dap_loc, plate, ifu))
+    try:
+        hdu = fits.open(
+            '{0}{1}/mangadap-{1}-{2}-default.fits.gz'.format(
+            dap_loc, plate, ifu))
+    except IOError:
+        raise DAP_IFU_DNE_Error(plate, ifu)
+        hdu = None
     objname = '{}-{}'.format(plate, ifu)
     return hdu, objname
 
@@ -248,9 +281,10 @@ class DAP_elines(object):
         - hdu: FITS HDU of MaNGA DAP MAPS output
         - q: string identifying what quantity we're getting (e.g., 'EW')
     '''
-    def __init__(self, hdu, q='EW', sn_t=3.):
+    def __init__(self, hdu, q='EW', sn_t=3., sn_t_Ba=3.):
         import re
-        self.sn_t = sn_t
+        self.sn_t = sn_t # SNR for all lines
+        self.sn_t_Ba = sn_t_Ba # SNR for Balmer lines
         self.qtype = q
         self.hdu = hdu
 
@@ -451,9 +485,10 @@ class DAP_elines(object):
         if save == False:
             plt.show()
         else:
-            plt.savefig('{}{}_eline_map.png'.format(loc, objname))
-
-        plt.close()
+            fname = os.path.join(
+                loc, '{}_eline_map.png'.format(objname))
+            plt.savefig(fname)
+            return fname
 
     def species_map(self, save=False, objname=None, loc=''):
         # make quantity and SNR maps for each species
@@ -568,14 +603,18 @@ class DAP_elines(object):
 
         plt.tight_layout()
         plt.subplots_adjust(top=.95)
-        plt.suptitle('\n'.join((objname, 'SNR: {}'.format(self.sn_t))))
+        plt.suptitle(
+            '\n'.join(
+                (objname, 'SNR (Balmer): {} ({})'.format(
+                    self.sn_t, self.sn_t_Ba))))
 
         if save == False:
             plt.show()
         else:
-            plt.savefig('{}{}_species_map.png'.format(loc, objname))
-
-        plt.close()
+            fname = os.path.join(
+                loc, '{}_species_map.png'.format(objname))
+            plt.savefig(fname)
+            return fname
 
     def to_BPT(self):
         # convenience method: returns a dict of lines, that you can
@@ -607,8 +646,8 @@ class DAP_elines(object):
             raise Warning('\'GFLUX\' is probably a better choice!')
 
         snmask = {
-            'Ha_SNRm': self.species_SNR_maps['Ha'] > self.sn_t,
-            'Hb_SNRm': self.species_SNR_maps['Hb'] > self.sn_t,
+            'Ha_SNRm': self.species_SNR_maps['Ha'] > self.sn_t_Ba,
+            'Hb_SNRm': self.species_SNR_maps['Hb'] > self.sn_t_Ba,
             'OIII_SNRm': self.SNR_maps['OIII---5008'] > self.sn_t,
             'NII_SNRm': self.SNR_maps['NII----6585'] > self.sn_t,
             'SII_SNRm': self.species_SNR_maps['SII'] > self.sn_t,
@@ -1049,7 +1088,10 @@ class BPT(object):
         if save == False:
             plt.show()
         else:
-            plt.savefig('{}{}_bpt_map_plot_ind.png'.format(loc, objname))
+            fname = os.path.join(
+                loc, '{}_bpt_map_plot_ind.png'.format(objname))
+            plt.savefig(fname)
+            return fname
 
 
 ifu_dims = {127: 32., 91: 27., 61: 22., 37: 17., 19: 12., 7: 7.}
@@ -1198,7 +1240,10 @@ class deproject(object):
         ax.set_aspect('equal')
         plt.tight_layout()
         if save == True:
-            plt.savefig('{}{}_deproject.png'.format(loc, self.plateifu))
+            fname = os.path.join(
+                loc, '{}_deproject.png'.format(self.plateifu))
+            plt.savefig(fname)
+            return fname
         else:
             plt.show()
 
@@ -1277,6 +1322,18 @@ def Zdiag_map(hdulist, objname, diag, save=True, loc=''):
     else:
         plt.show()
 
+def calzetti_k(lams, Rv=4.05):
+    lams_u = lams / 10000.
+    k_lam = np.empty_like(lams)
+    k_lam_l = (2.659 * (
+        -2.156 + 1.509 / lams_u - .198 / lams_u**2. + .011 / lams_u**3.) + Rv)
+    k_lam_h = (2.659 * (-1.857 + 1.040 / lams_u) + Rv)
+
+    k_lam[lams <= 6300.] = k_lam_l[lams <= 6300.]
+    k_lam[lams > 6300.] = k_lam_h[lams > 6300.]
+
+    return k_lam
+
 class gas_surf_dens(object):
     '''
     estimate a galaxy's gas mass, optical depth, and DGR, per-spaxel
@@ -1295,9 +1352,12 @@ class gas_surf_dens(object):
     results are somewhat dependent on your religious choice of
         solar (O/H) and Z. Default values are taken from
         Asplund 2009 (arXiv 0909:0948v1)
+
+    also take care to set R_V as your method of fitting and your
+        reddening law of choice prescribe
     '''
     def __init__(self, hdulist, objname, diag, R_V=3.1, OH_sol=8.69,
-                 Z_sol=.0134, **kwargs):
+                 Z_sol=.0134, ml=False, **kwargs):
 
         self.EBV = hdulist['E(B-V)'].data
         self.OH = hdulist[diag].data
@@ -1310,30 +1370,83 @@ class gas_surf_dens(object):
         self.OH_sol = OH_sol
         self.OH_halfsol = self.OH_sol - 0.301
         self.Z_sol = Z_sol
+        self.ml = ml
 
         for k, v in kwargs.iteritems():
             setattr(self, k, v)
 
-        if (OH.shape[0] != 4) or (len(OH.shape) != 3):
-            raise ValueError('OH must have shape (4 x 4 x N)')
-        if (EBV.shape[0] != 4) or (len(EBV.shape) != 3):
-            raise ValueError('EBV must have shape (4 x 4 x N)')
+        if (OH.shape[0] not in [4, 5]) or (len(OH.shape) != 3):
+            raise ValueError('OH must have shape (4 x 4 x N) or (5 x 5 x N)')
+        if (EBV.shape[0] not in [4, 5]) or (len(EBV.shape) != 3):
+            raise ValueError('EBV must have shape (4 x 4 x N) or (5 x 5 x N)')
 
-        SIGMA_gas = np.empty_like(OH)
-        Z = np.empty_like(OH)
-        xi = np.empty_like(OH)
-        tau_V = np.empty_like(OH)
+        if ml:
+            self._load_ml()
+            self.mltext = '-ML'
+        else:
+            self.mltext = ''
+            self._load()
+
+    def _load(self):
+
+        SIGMA_gas = np.empty_like(self.OH[:4])
+        Z = np.empty_like(self.OH[:4])
+        xi = np.empty_like(self.OH[:4])
+        tau_V = np.empty_like(self.OH[:4])
 
         # define measured metallicity in terms of solar metallicity and
         # oxygen abundance, assuming a constant oxygen-to-other-things
         # scaling (O/Z)_sun = (O/Z)_universal
-        Z[:3, :, :] = 10.**(OH[:3, :, :] - OH_sol) * Z_sol
-        xi[:3, :, :] = 10.**(-4.45 + 0.43 * OH[:3, :, :])
-        tau_V[:3, :, :] = R_V * EBV[:3, :, :] / 1.086
+        Z[:3, :, :] = 10.**(self.OH[:3, :, :] - self.OH_sol) * self.Z_sol
+        xi[:3, :, :] = 0.3#10.**(-4.45 + 0.43 * self.OH[:3, :, :])
+        tau_V[:3, :, :] = self.EBV[:3, :, :] / 1.086 * calzetti_k(
+            np.array([5500.]), Rv=self.R_V)
         SIGMA_gas[:3, :, :] = 0.2 * \
             (tau_V[:3, :, :] / (xi[:3, :, :] * Z[:3, :, :]))
 
-        mask = ((EBV[3, :, :].astype(bool)) | (OH[3, :, :].astype(bool)))
+        mask = (
+            (self.EBV[3, :, :].astype(bool)) | \
+            (self.OH[3, :, :].astype(bool)) | \
+            (self.OH[1, :, :] <= self.OH_halfsol))
+        for a in [SIGMA_gas, xi, tau_V, Z]:
+            a[3, :, :] = mask
+            #a[3, :, :] = np.zeros_like(a[3, :, :]).astype(bool)
+
+        self.SIGMA_gas = SIGMA_gas
+        self.Z = Z
+        self.xi = xi
+        self.tau_V = tau_V
+        self.mask = mask
+
+    def _load_ml(self):
+        # maximum likelihood
+        SIGMA_gas = np.empty_like(self.OH[:4])
+        Z = np.empty_like(self.OH[:4])
+        xi = np.empty_like(self.OH[:4])
+        tau_V = np.empty_like(self.OH[:4])
+
+        # define measured metallicity in terms of solar metallicity and
+        # oxygen abundance, assuming a constant oxygen-to-other-things
+        # scaling (O/Z)_sun = (O/Z)_universal
+        Z[:3, :, :] = 10.**(self.OH[:3, :, :] - self.OH_sol) * self.Z_sol
+        xi[:3, :, :] = 0.3#10.**(-4.45 + 0.43 * self.OH[:3, :, :])
+        tau_V[:3, :, :] = self.EBV[:3, :, :] / 1.086 * calzetti_k(
+            np.array([5500.]), Rv=self.R_V)
+        SIGMA_gas[:3, :, :] = 0.2 * \
+            (tau_V[:3, :, :] / (xi[:3, :, :] * Z[:3, :, :]))
+
+        # replace 50th pctl with ML value (very hacky)
+        Z[1, :, :] = 10.**(self.OH[4, :, :] - self.OH_sol) * self.Z_sol
+        xi[1, :, :] = 10.**(-4.45 + 0.43 * self.OH[4, :, :])
+        tau_V[1, :, :] = self.EBV[4, :, :] / 1.086 * calzetti_k(
+            np.array([5500.]), Rv=self.R_V)
+        SIGMA_gas[1, :, :] = 0.2 * \
+            (tau_V[1, :, :] / (xi[1, :, :] * Z[1, :, :]))
+
+        mask = (
+            (self.EBV[3, :, :].astype(bool)) | \
+            (self.OH[3, :, :].astype(bool)) | \
+            (self.OH[1, :, :] <= self.OH_halfsol))
         for a in [SIGMA_gas, xi, tau_V, Z]:
             a[3, :, :] = mask
 
@@ -1401,23 +1514,6 @@ class gas_surf_dens(object):
 
         OH_map_cax = fig.add_axes([.05, .465, .4, .035])
 
-        # fix maps axes
-        for ax in [OH_map_ax, S_map_ax]:
-            ax.set_ticklabel_type(
-                'delta',
-                center_pixel=tuple(t/2. for t in self.OH[1].shape))
-
-            ax.axis['bottom'].major_ticklabels.set(fontsize=10)
-            ax.axis['left'].major_ticklabels.set(fontsize=10)
-            ax.tick_params(axis='both', colors='w')
-            ax.grid()
-            ax.set_xlabel('')
-            ax.set_ylabel('')
-            ax.set_aspect('equal')
-            ax.add_patch(patches.Rectangle(
-                (-s[0], -s[1]), 2*s[0], 2*s[1],
-                linewidth=0, fill=None, hatch=' / ', zorder=0))
-
         ## start working on Z/xi map axes
         #set effective lower limit at sol - 0.301 dex (50%)
         OH_med = np.ma.array(self.OH[1], mask=self.mask)
@@ -1474,6 +1570,7 @@ class gas_surf_dens(object):
         OH16 = np.ma.array(self.OH[0, :, :], mask=self.mask).flatten()
         OH84 = np.ma.array(self.OH[2, :, :], mask=self.mask).flatten()
         OH_e = np.ma.abs(np.ma.row_stack([OH16, OH84]) - OH)
+        tau = np.ma.array(self.tau_V[1, :, :], mask=self.mask).flatten()
 
         OH_R_ax.scatter(
             r, OH,
@@ -1525,7 +1622,7 @@ class gas_surf_dens(object):
                 np.ma.array(self.SIGMA_gas[1], mask=self.mask)),
             vmin=logSmin, vmax=logSmax)
 
-        S_map_cax = fig.add_axes([.8875, .5175, .035, .45])
+        S_map_cax = fig.add_axes([.89, .5175, .035, .45])
         S_map_cb = plt.colorbar(
             S_map, cax=S_map_cax,
             orientation='vertical', extend='both')
@@ -1538,19 +1635,36 @@ class gas_surf_dens(object):
                 '\mathrm{pc^{-2}}}}$',
             size=12)
 
-        #plt.tight_layout()
-        plt.subplots_adjust(top=0.95, left=.1, hspace=.15, right=0.95)
+        # fix maps axes
+        for ax in [OH_map_ax, S_map_ax]:
+            ax.set_ticklabel_type(
+                'delta',
+                center_pixel=tuple(t/2. for t in self.OH[1].shape))
 
-        plt.suptitle('{} ({})'.format(self.objname, self.diag.replace(
-            '_', '\_')))
+            ax.axis['bottom'].major_ticklabels.set(fontsize=10)
+            ax.axis['left'].major_ticklabels.set(fontsize=10)
+            ax.tick_params(axis='both', colors='w')
+            ax.grid()
+            ax.set_xlabel('')
+            ax.set_ylabel('')
+            ax.set_aspect('equal')
+            ax.add_patch(patches.Rectangle(
+                (-s[0], -s[1]), 2*s[0], 2*s[1],
+                linewidth=0, fill=None, hatch=' / ', zorder=0))
+
+        plt.subplots_adjust(top=0.95, left=.05, hspace=.15, right=0.9)
+
+        plt.suptitle('{} ({}{})'.format(self.objname, self.diag.replace(
+            '_', '\_'), self.mltext))
 
         if save == True:
-            plt.savefig('{}{}-SIGMA-{}.png'.format(
-                loc, self.objname, self.diag))
+            fname = os.path.join(loc, '{}-SIGMA.png'.format(self.objname))
+            plt.savefig(fname)
+            return fname
         else:
             plt.show()
 
-    def reddening(self, save=True, loc=''):
+    def reddening_fig(self, save=True, loc=''):
 
         # set up colormap to use
         cmap = copy.copy(plt.cm.cubehelix_r)
@@ -1598,7 +1712,9 @@ class gas_surf_dens(object):
             label=r'$\tau_{V}$', size=14)
 
         tau_clims = np.array([tau_map_cb.vmin, tau_map_cb.vmax])
-        EBV_clims = tau_clims * 1.086 / self.R_V
+        EBV_clims = tau_clims * 1.086 / calzetti_k(
+            np.array([5500.]), Rv=self.R_V)
+
         EBV_map_cax = tau_map_cax.twiny()
         EBV_map_cax.set_xlim(EBV_clims)
         EBV_map_cax.xaxis.set_tick_params(labelsize=12)
@@ -1607,17 +1723,51 @@ class gas_surf_dens(object):
         EBV_map_cax.set_xlabel(r'$E(B-V)$', size=12)
 
         ax.set_aspect('equal')
-        plt.suptitle(r'{} Extinction'.format(self.objname))
+        plt.suptitle(r'{} Extinction ({}{})'.format(
+                self.objname, self.diag.replace('_', '\_'), self.mltext))
         plt.subplots_adjust(
             hspace=.3, bottom=.1, top=.95, left=.1, right=.95)
 
         if save == True:
-                plt.savefig('{}{}-reddening.png'.format(
-                    loc, self.objname))
+            fname = os.path.join(loc, '{}-reddening.png'.format(self.objname))
+            plt.savefig(fname)
+            return fname
         else:
             plt.show()
 
-    def SFR(self, Ha, drpall_row, plot=False, save=True, loc=''):
+    def total_gas_mass(self, drpall_row, dep, max_Re=3., N=100):
+        '''
+        estimate total gas mass using radial GP
+        '''
+
+        from astropy.cosmology import WMAP9 as cosmo
+        from sklearn import gaussian_process
+
+        # angular and physical (on-galaxy) spaxel sizes
+        spaxel_asize = 0.25 * u.arcsec**2.
+        spaxel_psize = spaxel_asize / (cosmo.arcsec_per_kpc_proper(
+            drpall_row['nsa_zdist']))**2.
+
+        # dep.d is the spaxel position in Re
+        logS = np.log10(self.SIGMA_gas[:3, :, :])
+        dlogS = 0.5 * (logS[2, :, :] - logS[0, :, :])
+        mask = self.mask
+        medS = logS[1, :, :]
+        R = np.atleast_2d(dep.d).T
+        nugget = (dlogS/logS)**2.
+
+        gp = gaussian_process.GaussianProcess(
+            regr='constant', corr='squared_exponential',
+            nugget=nugget.flatten()[~mask.flatten()])
+        gp.fit(
+            np.atleast_2d(dep.d.flatten()[~mask.flatten()]),
+            logS.flatten()[~mask.flatten()])
+
+        ests = np.array(
+            [gp.predict(R[R <= max_Re]) for _ in range(N)]) * spaxel_psize/1.0e6
+
+
+    def SFR_fig(self, Ha, drpall_row, save=True, loc=''):
         '''
         estimate SFR from uncorrected Ha and dust extinction
         '''
@@ -1642,132 +1792,115 @@ class gas_surf_dens(object):
             sfr.unit
         self.sfr, self.sfr_u = sfr, sfr_u
 
-        if plot == True:
-            plt.close('all')
+        plt.close('all')
 
-            s = sfr.shape
+        s = sfr.shape
 
-            # set up colormap to use
-            cmap = copy.copy(plt.cm.cubehelix_r)
-            cmap.set_bad('gray', 0.)
-            cmap.set_under('w')
-            cmap.set_over('k')
+        # set up colormap to use
+        cmap = copy.copy(plt.cm.cubehelix_r)
+        cmap.set_bad('gray', 0.)
+        cmap.set_under('w')
+        cmap.set_over('k')
 
-            diag = self.diag
-            header = self.hdulist[diag].header
-            plt.close('all')
-            fig = plt.figure(figsize=(6, 3), dpi=300)
+        diag = self.diag
+        header = self.hdulist[diag].header
+        plt.close('all')
+        fig = plt.figure(figsize=(6, 3), dpi=300)
 
-            # axes for SFR map
+        # axes for SFR map
 
-            gs = gridspec.GridSpec(1, 2, width_ratios=[3, 2])
-            SFR_map_ax = pywcsgrid2.subplot(gs[0], header=header)
-            SFR_map_ax.add_patch(patches.Rectangle(
-                (-s[0], -s[1]), 2*s[0], 2*s[1],
-                linewidth=0, fill=None, hatch=' / ', zorder=0))
+        gs = gridspec.GridSpec(1, 2, width_ratios=[3, 2])
+        SFR_map_ax = pywcsgrid2.subplot(gs[0], header=header)
+        SFR_map_ax.add_patch(patches.Rectangle(
+            (-s[0], -s[1]), 2*s[0], 2*s[1],
+            linewidth=0, fill=None, hatch=' / ', zorder=0))
 
-            SFR_map_ax.set_ticklabel_type(
-                'delta',
-                center_pixel=tuple(t/2. for t in self.sfr.shape))
-            SFR_map_ax.axis['bottom'].major_ticklabels.set(fontsize=10)
-            SFR_map_ax.axis['left'].major_ticklabels.set(fontsize=10)
-            SFR_map_ax.tick_params(axis='both', colors='w')
-            SFR_map_ax.grid()
-            SFR_map_ax.yaxis.label.set_size(10.)
-            SFR_map_ax.xaxis.label.set_size(10.)
-            SFR_map_ax.set_xlabel('')
-            SFR_map_ax.set_ylabel('')
+        SFR_map_ax.set_ticklabel_type(
+            'delta',
+            center_pixel=tuple(t/2. for t in self.sfr.shape))
+        SFR_map_ax.axis['bottom'].major_ticklabels.set(fontsize=10)
+        SFR_map_ax.axis['left'].major_ticklabels.set(fontsize=10)
+        SFR_map_ax.tick_params(axis='both', colors='w')
+        SFR_map_ax.grid()
+        SFR_map_ax.yaxis.label.set_size(10.)
+        SFR_map_ax.xaxis.label.set_size(10.)
+        SFR_map_ax.set_xlabel('')
+        SFR_map_ax.set_ylabel('')
 
-            vmin = -3 if (np.min(np.log10(sfr) < -3.)) else np.min(
-                np.log10(sfr))
-            el = True if (np.min(np.log10(sfr) < -3.)) else False
-            vmax = -3 if (np.max(np.log10(sfr) > 3.)) else np.max(
-                np.log10(sfr))
-            eu = True if (np.max(np.log10(sfr) > 3.)) else False
+        vmin = -3 if (np.min(np.log10(sfr) < -3.)) else np.min(
+            np.log10(sfr))
+        el = True if (np.min(np.log10(sfr) < -3.)) else False
+        vmax = -3 if (np.max(np.log10(sfr) > 3.)) else np.max(
+            np.log10(sfr))
+        eu = True if (np.max(np.log10(sfr) > 3.)) else False
 
-            if el and eu:
-                extend = 'both'
-            elif el:
-                extend = 'lower'
-            elif eu:
-                extend = 'upper'
-            else:
-                extend = 'neither'
+        if el and eu:
+            extend = 'both'
+        elif el:
+            extend = 'lower'
+        elif eu:
+            extend = 'upper'
+        else:
+            extend = 'neither'
 
-            SFR_map = SFR_map_ax.imshow(
-                np.log10(sfr), cmap=cmap, aspect='equal',
-                vmin=vmin, vmax=vmax)
-            SFR_cb = plt.colorbar(
-                SFR_map, orientation='vertical', extend=extend)
-            SFR_cb.set_label(
-                r'$\log{\Sigma_{SFR}}$' + \
-                r'[{}]'.format(sfr_u.to_string('latex')),
-                fontsize=8)
-            SFR_cb.ax.tick_params(labelsize=8)
+        SFR_map = SFR_map_ax.imshow(
+            np.log10(sfr), cmap=cmap, aspect='equal',
+            vmin=vmin, vmax=vmax)
+        SFR_cb = plt.colorbar(
+            SFR_map, orientation='vertical', extend=extend)
+        SFR_cb.set_label(
+            r'$\log{\Sigma_{SFR}}$' + \
+            r'[{}]'.format(sfr_u.to_string('latex')),
+            fontsize=8)
+        SFR_cb.ax.tick_params(labelsize=8)
 
-            # axes for SFR-SIGMA plot
-            SFR_SIGMA_ax = plt.subplot(gs[1])
-            S_masked = np.ma.array(
-                self.SIGMA_gas[1], mask=self.SIGMA_gas[-1])
-            data  = np.row_stack(
-                [self.SIGMA_gas[1].flatten(), self.sfr.flatten()])
-            mask = np.empty_like(data[1], dtype=bool)
-            mask = ((self.SIGMA_gas[-1].flatten().astype(bool)) | \
-                          (data[0] < 10**-0.5) | (data[0] > 10.**5.) | \
-                          (data[1] < 10.**-4) | (data[1] > 10.**3.))
-            S_masked = data[0][~mask]
-            sfr_masked = data[1][~mask]
+        # axes for SFR-SIGMA plot
+        SFR_SIGMA_ax = plt.subplot(gs[1])
+        S_masked = np.ma.array(
+            self.SIGMA_gas[1], mask=self.SIGMA_gas[-1])
+        data  = np.row_stack(
+            [self.SIGMA_gas[1].flatten(), self.sfr.flatten()])
+        mask = np.empty_like(data[1], dtype=bool)
+        mask = ((self.SIGMA_gas[-1].flatten().astype(bool)) | \
+                      (data[0] < 10**-0.5) | (data[0] > 10.**5.) | \
+                      (data[1] < 10.**-4) | (data[1] > 10.**3.))
+        S_masked = data[0][~mask]
+        sfr_masked = data[1][~mask]
 
-            SFR_SIGMA_ax.set_xlabel(
-                r'$\log{\Sigma_{gas}} [\frac{M_{\odot}}{\mathrm{pc}^{2}}]$',
-                size=10)
-            SFR_SIGMA_ax.set_ylabel(r'$\log{\Sigma_{SFR}}$ ' + \
-                r'[{}]'.format(
-                self.sfr_u.to_string('latex')),
-                size=10)
+        SFR_SIGMA_ax.set_xlabel(
+            r'$\log{\Sigma_{gas}} [\frac{M_{\odot}}{\mathrm{pc}^{2}}]$',
+            size=10)
+        SFR_SIGMA_ax.set_ylabel(r'$\log{\Sigma_{SFR}}$ ' + \
+            r'[{}]'.format(
+            self.sfr_u.to_string('latex')),
+            size=10)
 
-            SFR_SIGMA_ax.scatter(
-                np.log10(S_masked),
-                np.log10(sfr_masked), marker='.',
-                facecolor='k', edgecolor='None', label='spaxels',
-                alpha=0.4)
-            SFR_SIGMA_ax.tick_params(axis='both', labelsize=8.)
-            xll = np.log10(S_masked).min() - .05
-            if xll < -0.5: xll = -0.5
-            xul = np.log10(S_masked).max() + .05
-            if xul > 5: xll = 5
-            yll = np.log10(sfr_masked).min() - .05
-            if yll < -4: yll = -4
-            yul = np.log10(sfr_masked).max() + .05
-            if yul > 3: yul = 3
+        SFR_SIGMA_ax.scatter(
+            np.log10(S_masked),
+            np.log10(sfr_masked), marker='.',
+            facecolor='k', edgecolor='None', label='spaxels',
+            alpha=0.4)
+        SFR_SIGMA_ax.tick_params(axis='both', labelsize=8.)
+        xll = np.log10(S_masked).min() - .05
+        if xll < -0.5: xll = -0.5
+        xul = np.log10(S_masked).max() + .05
+        if xul > 5: xll = 5
+        yll = np.log10(sfr_masked).min() - .05
+        if yll < -4: yll = -4
+        yul = np.log10(sfr_masked).max() + .05
+        if yul > 3: yul = 3
 
-            SFR_SIGMA_ax.set_xlim([xll,xul])
-            SFR_SIGMA_ax.set_ylim([yll,yul])
+        SFR_SIGMA_ax.set_xlim([xll,xul])
+        SFR_SIGMA_ax.set_ylim([yll,yul])
 
-            plt.tight_layout()
-            plt.suptitle(r'{} H$\alpha$ SFR'.format(self.objname))
-            plt.subplots_adjust(top=0.9)
+        plt.tight_layout()
+        plt.suptitle(r'{} H$\alpha$ SFR ({}{})'.format(
+            self.objname, self.diag.replace('_', '\_'), self.mltext))
+        plt.subplots_adjust(top=0.9)
 
-            if save == True:
-                plt.savefig('{}{}-Ha_SFR.png'.format(
-                    loc, self.objname))
-            else:
-                plt.show()
-
-        return sfr, sfr_u
-
-def radial_gradient(x, y, yuerr, ylerr, regr='linear',
-                    corr='squared_exponential'):
-
-    from sklearn import gaussian_process as gp
-
-    X = np.atleast_2d(x.compressed()).T
-    nugget = np.average(
-        np.row_stack(
-            [ylerr.compressed(), yuerr.compressed()]), axis=0)
-    nugget = (nugget / y.compressed())**2.
-    GP = gp.GaussianProcess(
-        regr=regr, corr=corr, nugget=nugget)
-    GP.fit(X, y.compressed())
-
-    return GP
+        if save == True:
+            fname = os.path.join(loc, '{}-Ha_SFR.png'.format(self.objname))
+            plt.savefig(fname)
+            return fname
+        else:
+            plt.show()
