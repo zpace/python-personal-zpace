@@ -31,7 +31,7 @@ pw_loc = drpall_loc + '.saspwd'
 
 uwdata_loc = '/d/www/karben4/'
 
-MPL_versions = {'MPL-3': 'v1_3_3', 'MPL-4': 'v1_5_1'}
+MPL_versions = {'MPL-3': 'v1_3_3', 'MPL-4': 'v1_5_1', 'MPL-5': 'v2_0_1'}
 
 base_url = 'dtn01.sdss.org/sas/'
 mangaspec_base_url = base_url + 'mangawork/manga/spectro/redux/'
