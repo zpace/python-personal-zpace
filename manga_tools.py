@@ -1,27 +1,19 @@
 import numpy as np
 
-import astropy
 import astropy.table as table
 import astropy.io.fits as fits
-from astropy.wcs import WCS
 from astropy import units as u, constants as c, coordinates as coords, wcs
 
-import pandas as pd
 import os
-import re
 
-from matplotlib import rcParams, pyplot as plt, patches
+from matplotlib import pyplot as plt, patches
 
 from glob import glob
-
-from scipy.interpolate import interp1d
-from pysynphot import observation, spectrum
 
 from matplotlib import gridspec, colors
 import matplotlib.ticker as mtick
 
 import pywcsgrid2
-import itertools
 import gz2tools as gz2
 import copy
 
@@ -36,8 +28,7 @@ MPL_versions = {'MPL-3': 'v1_3_3', 'MPL-4': 'v1_5_1', 'MPL-5': 'v2_0_1'}
 base_url = 'dtn01.sdss.org/sas/'
 mangaspec_base_url = base_url + 'mangawork/manga/spectro/redux/'
 
-#c = 299792.458 #km/s
-H0 = 70. #km/s/Mpc
+H0 = 70.  # km/s/Mpc
 
 # =====
 # units
@@ -45,14 +36,16 @@ H0 = 70. #km/s/Mpc
 
 # Maggy (SDSS flux unit)
 Mgy = u.def_unit(
-    s='Mgy', represents=3631.*u.Jy,
+    s='Mgy', represents=3631. * u.Jy,
     doc='SDSS flux unit', prefixes=True)
+
 
 def get_drpall_val(fname, qtys, plateifu):
     drpall = table.Table.read(fname)
     obj = drpall[drpall['plateifu'] == plateifu]
-    #print drpall.colnames
+    # print drpall.colnames
     return obj[qtys]
+
 
 def get_cutout(version, plateifu, verbose=False):
 
@@ -61,6 +54,7 @@ def get_cutout(version, plateifu, verbose=False):
 
     what = '{}/stack/images/{}.png'.format(plate, ifudsgn)
     get_something(version, what, dest, verbose)
+
 
 def get_platelist(version, dest=drpall_loc, **kwargs):
     '''
@@ -96,7 +90,7 @@ def get_something(version, what, dest='.', verbose=False):
 
     full_url = v_url + '/' + what
 
-    if verbose == True:
+    if verbose:
         v = 'v'
     else:
         v = ''
@@ -104,8 +98,8 @@ def get_something(version, what, dest='.', verbose=False):
     rsync_cmd = 'rsync -a{3}z --password-file {0} rsync://sdss@{1} {2}'.format(
         pw_loc, full_url, dest, v)
 
-    if verbose == True:
-        print 'Here\'s what\'s being run...\n\n{0}\n'.format(rsync_cmd)
+    if verbose:
+        print('Here\'s what\'s being run...\n\n{0}\n'.format(rsync_cmd))
 
     os.system(rsync_cmd)
 
@@ -157,7 +151,7 @@ def res_over_plate(version, plate='7443', plot=False, **kwargs):
     fl = glob('manga-{}-*-LOGCUBE.fits.gz'.format(plate))
 
     # load in each file, get hdu#5 data, and average across bundles
-    print 'READING IN HDU LIST...'
+    print('READING IN HDU LIST...')
     specres = np.array(
         [fits.open(f)['SPECRES'].data for f in fl])
 
@@ -166,8 +160,8 @@ def res_over_plate(version, plate='7443', plot=False, **kwargs):
 
     p = np.percentile(specres, [14, 50, 86], axis=0)
 
-    if plot == True:
-        print 'PLOTTING...'
+    if plot:
+        print('PLOTTING...')
         plt.close('all')
         fig = plt.figure(figsize=(8, 6))
         ax = fig.add_subplot(111)
@@ -187,10 +181,10 @@ def res_over_plate(version, plate='7443', plot=False, **kwargs):
 
     # calculate average percent variation
     specres_var = np.abs(specres - p[1]) / specres
-    print 'Average % variability of SPECRES: {0:.5f}'.format(
-        specres_var.mean())
+    print('Average % variability of SPECRES: {0:.5f}'.format(
+          specres_var.mean()))
 
-    if plot == True:
+    if plot:
         plt.close('all')
         fig = plt.figure(figsize=(8, 6))
         ax = fig.add_subplot(111)
@@ -229,7 +223,7 @@ def good_spaxels(hdu):
 
     ivargood = (np.sum(ivar, axis=0) != 0)
     fluxgood = (np.sum(flux, axis=0) != 0)
-    snrgood = (np.mean(flux*np.sqrt(ivar), axis=0) >= 1)
+    snrgood = (np.mean(flux * np.sqrt(ivar), axis=0) >= 1)
 
     return ivargood * fluxgood * snrgood
 
@@ -251,10 +245,13 @@ def target_data(hdu):
 
     return objra, objdec, cenra, cendec, mangaID
 
+
 class DAP_IFU_DNE_Error(Exception):
+
     '''
     DAP IFU does not exist
     '''
+
     def __init__(self, plate, ifu):
         self.plate = plate
         self.ifu = ifu
@@ -263,28 +260,32 @@ class DAP_IFU_DNE_Error(Exception):
         return 'plateifu {}-{} DNE in the given location!'.format(
             self.plate, self.ifu)
 
+
 def read_dap_ifu(plate, ifu):
     try:
         hdu = fits.open(
             '{0}{1}/mangadap-{1}-{2}-default.fits.gz'.format(
-            dap_loc, plate, ifu))
+                dap_loc, plate, ifu))
     except IOError:
         raise DAP_IFU_DNE_Error(plate, ifu)
         hdu = None
     objname = '{}-{}'.format(plate, ifu)
     return hdu, objname
 
+
 class DAP_elines(object):
+
     '''
     load emission line equivalent widths from the MAPS DAP output
 
         - hdu: FITS HDU of MaNGA DAP MAPS output
         - q: string identifying what quantity we're getting (e.g., 'EW')
     '''
+
     def __init__(self, hdu, q='EW', sn_t=3., sn_t_Ba=3.):
         import re
-        self.sn_t = sn_t # SNR for all lines
-        self.sn_t_Ba = sn_t_Ba # SNR for Balmer lines
+        self.sn_t = sn_t  # SNR for all lines
+        self.sn_t_Ba = sn_t_Ba  # SNR for Balmer lines
         self.qtype = q
         self.hdu = hdu
 
@@ -298,7 +299,7 @@ class DAP_elines(object):
         for k, v in hdu[self.q].header.items():
             if (k[0] == 'C') and (len(k) == 3):
                 try:
-                    i = int(k[1:])-1
+                    i = int(k[1:]) - 1
                 except KeyError:
                     continue
                 emline[v] = i
@@ -308,17 +309,14 @@ class DAP_elines(object):
         mask_extension = hdu[self.q].header['QUALDATA']
         ivar_extension = hdu[self.q].header['ERRDATA']
 
-        self.ivar_maps = {k: 64.*np.array(hdu[ivar_extension].data[v, :, :])
-            for (k, v) in self.emline.iteritems()}
+        self.ivar_maps = {k: np.array(hdu[ivar_extension].data[v, :, :])
+                          for (k, v) in self.emline.iteritems()}
 
         self.qty_maps = {k: np.array(hdu[self.q].data[v, :, :])
                          for (k, v) in self.emline.iteritems()}
 
         self.mask_maps = {k: np.array(hdu[mask_extension].data[v, :, :])
                           for (k, v) in self.emline.iteritems()}
-
-        #for (k, v) in self.emline.iteritems():
-        #    print k, '\n', self.qty_maps[k] * np.sqrt(self.ivar_maps[k])
 
         self.SNR_maps = {k: np.ma.array(
             self.qty_maps[k] * np.sqrt(self.ivar_maps[k]),
@@ -358,8 +356,8 @@ class DAP_elines(object):
                 [self.qty_maps[k] for k in ls], axis=0),
                 mask=self.species_mask_maps[s])
             # ivar maps
-            self.species_ivar_maps[s] = np.ma.array(1./np.sum(
-                [1./self.ivar_maps[k] for k in ls],
+            self.species_ivar_maps[s] = np.ma.array(1 / np.sum(
+                [1 / self.ivar_maps[k] for k in ls],
                 axis=0), mask=self.species_mask_maps[s])
             # SNR maps
             self.species_SNR_maps[s] = np.ma.array(np.sqrt(
@@ -371,8 +369,6 @@ class DAP_elines(object):
         # mostly for QA purposes
 
         import mpl_toolkits.axes_grid1.axes_grid as axes_grid
-        from mpl_toolkits.axes_grid1 import make_axes_locatable
-        from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
         cmap1 = plt.cm.cubehelix
         cmap1.set_bad('gray')
@@ -380,9 +376,9 @@ class DAP_elines(object):
         cmap2 = plt.cm.Purples_r
         cmap2.set_bad('gray')
 
-        n_species = len(self.emline) # number of rows of subplots
-        n_cols = 2 # col 1 for qty, col 2 for SNR
-        fig_dims = (3.*n_cols, 2.*n_species)
+        n_species = len(self.emline)  # number of rows of subplots
+        n_cols = 2  # col 1 for qty, col 2 for SNR
+        fig_dims = (3. * n_cols, 2. * n_species)
 
         fig = plt.figure(figsize=fig_dims, dpi=300)
         gh = pywcsgrid2.GridHelper(wcs=self.eline_hdr)
@@ -397,10 +393,9 @@ class DAP_elines(object):
                                 axes_class=(pywcsgrid2.Axes,
                                             dict(grid_helper=gh)))
 
-
         for i, k in enumerate(sorted(self.emline.keys())):
-            qpn = 2*i # quantity subplot number
-            spn = 2*i + 1 # SNR subplot number
+            qpn = 2 * i  # quantity subplot number
+            spn = 2 * i + 1  # SNR subplot number
 
             # create arrays to represent shown quantities
             sa = np.ma.array(
@@ -420,24 +415,24 @@ class DAP_elines(object):
                 origin='lower', cmap=cmap1, norm=colors.LogNorm())
 
             s_c = g[qpn].contour(
-                sa, levels=[self.sn_t,],
+                sa, levels=[self.sn_t, ],
                 colors='r', linewidths=1.,
                 linestyles='-')
 
             g[spn].contour(
-                sa, levels=[self.sn_t,],
+                sa, levels=[self.sn_t, ],
                 colors='r', linewidths=1., linestyles='-')
 
             g[qpn].grid()
             g[spn].grid()
             g[qpn].set_ticklabel_type(
                 'delta',
-                center_pixel=tuple(t/2. for t in self.qty_maps[k].shape))
+                center_pixel=tuple(t / 2. for t in self.qty_maps[k].shape))
             g[spn].set_ticklabel_type(
                 'delta',
-                center_pixel=tuple(t/2. for t in self.qty_maps[k].shape))
-            g[qpn].add_inner_title('{}'.format(k.replace(
-                '-','')), loc=2, frameon=False)
+                center_pixel=tuple(t / 2. for t in self.qty_maps[k].shape))
+            g[qpn].add_inner_title('{}'.format(k.replace('-', '')),
+                                   loc=2, frameon=False)
             # get rid of axes labels
             g[qpn].set_xlabel('')
             g[qpn].set_ylabel('')
@@ -450,16 +445,16 @@ class DAP_elines(object):
                     '^2', '$^2$')), size=8)
             # configure quantity's colorbar
             # define max and min over range within factor of 4 of max SNR
-            q_clims = [np.min(qa[sa >= 0.25*sa.max()]),
-                       np.max(qa[sa >= 0.25*sa.max()])]
+            q_clims = [np.min(qa[sa >= sa.max() / 4]),
+                       np.max(qa[sa >= sa.max() / 4])]
             dqt = int(np.log10(q_clims[-1]))
             q_ticks = np.arange(
                 10.**dqt, q_clims[-1], 10.**dqt)
             if len(q_ticks) < 2:
                 q_ticks = np.concatenate(
-                    [np.arange(1., 10., 1.) * 10.**(dqt-1) * np.ones(9),
+                    [np.arange(1., 10., 1.) * 10.**(dqt - 1) * np.ones(9),
                      np.arange(1., 10., 1.) * 10.**dqt * np.ones(9),
-                     np.arange(1., 10., 1.) * 10.**(dqt+1) * np.ones(9)])
+                     np.arange(1., 10., 1.) * 10.**(dqt + 1) * np.ones(9)])
             qcb.ax.set_yticks(q_ticks)
             qcb.ax.set_yticklabels(q_ticks, size=8)
             qcb.set_clim(q_clims)
@@ -482,7 +477,7 @@ class DAP_elines(object):
         plt.subplots_adjust(top=.95)
         plt.suptitle(objname)
 
-        if save == False:
+        if not save:
             plt.show()
         else:
             fname = os.path.join(
@@ -495,8 +490,6 @@ class DAP_elines(object):
         # mostly for QA purposes
 
         import mpl_toolkits.axes_grid1.axes_grid as axes_grid
-        from mpl_toolkits.axes_grid1 import make_axes_locatable
-        from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
         cmap1 = plt.cm.cubehelix
         cmap1.set_bad('gray')
@@ -504,9 +497,9 @@ class DAP_elines(object):
         cmap2 = plt.cm.Purples_r
         cmap2.set_bad('gray')
 
-        n_species = len(self.lines_per_species) # number of rows of subplots
-        n_cols = 2 # col 1 for qty, col 2 for SNR
-        fig_dims = (3.*n_cols, 2.*n_species)
+        n_species = len(self.lines_per_species)  # number of rows of subplots
+        n_cols = 2  # col 1 for qty, col 2 for SNR
+        fig_dims = (3. * n_cols, 2. * n_species)
 
         fig = plt.figure(figsize=fig_dims, dpi=300)
         gh = pywcsgrid2.GridHelper(wcs=self.eline_hdr)
@@ -522,13 +515,13 @@ class DAP_elines(object):
                                             dict(grid_helper=gh)))
 
         for i, k in enumerate(sorted(self.lines_per_species.keys())):
-            qpn = 2*i # quantity subplot number
-            spn = 2*i + 1 # SNR subplot number
+            qpn = 2 * i  # quantity subplot number
+            spn = 2 * i + 1  # SNR subplot number
 
             # create arrays to represent shown quantities
             sa = np.ma.array(
                 self.species_SNR_maps[k],
-                mask=(self.species_SNR_maps[k].mask | \
+                mask=(self.species_SNR_maps[k].mask |
                       (self.species_maps[k] < 0)))
             qa = np.ma.array(
                 self.species_maps[k].data, mask=sa.mask)
@@ -543,12 +536,12 @@ class DAP_elines(object):
                 origin='lower', cmap=cmap1, norm=colors.LogNorm())
 
             s_c = g[qpn].contour(
-                sa, levels=[0.5*self.sn_t, self.sn_t, 2.*self.sn_t],
+                sa, levels=[0.5 * self.sn_t, self.sn_t, 2. * self.sn_t],
                 colors='r', linewidths=1.,
                 linestyles=[':', '-', '-.'])
 
             g[spn].contour(
-                sa, levels=[0.5*self.sn_t, self.sn_t, 2.*self.sn_t],
+                sa, levels=[0.5 * self.sn_t, self.sn_t, 2. * self.sn_t],
                 colors='r', linewidths=1.,
                 linestyles=[':', '-', '-.'])
 
@@ -556,10 +549,10 @@ class DAP_elines(object):
             g[spn].grid()
             g[qpn].set_ticklabel_type(
                 'delta',
-                center_pixel=tuple(t/2. for t in self.species_maps[k].shape))
+                center_pixel=tuple(t / 2. for t in self.species_maps[k].shape))
             g[spn].set_ticklabel_type(
                 'delta',
-                center_pixel=tuple(t/2. for t in self.species_maps[k].shape))
+                center_pixel=tuple(t / 2. for t in self.species_maps[k].shape))
             g[qpn].add_inner_title('{}'.format(k), loc=2, frameon=False)
             # get rid of axes labels
             g[qpn].set_xlabel('')
@@ -573,16 +566,16 @@ class DAP_elines(object):
                     '^2', '$^2$')), size=8)
             # configure quantity's colorbar
             # define max and min over range within factor of 4 of max SNR
-            q_clims = [np.min(qa[sa >= 0.25*sa.max()]),
-                       np.max(qa[sa >= 0.25*sa.max()])]
+            q_clims = [np.min(qa[sa >= sa.max() / 4]),
+                       np.max(qa[sa >= sa.max() / 4])]
             dqt = int(np.log10(q_clims[-1]))
             q_ticks = np.arange(
                 10.**dqt, q_clims[-1], 10.**dqt)
             if len(q_ticks) < 2:
                 q_ticks = np.concatenate(
-                    [np.arange(1., 10., 1.) * 10.**(dqt-1) * np.ones(9),
+                    [np.arange(1., 10., 1.) * 10.**(dqt - 1) * np.ones(9),
                      np.arange(1., 10., 1.) * 10.**dqt * np.ones(9),
-                     np.arange(1., 10., 1.) * 10.**(dqt+1) * np.ones(9)])
+                     np.arange(1., 10., 1.) * 10.**(dqt + 1) * np.ones(9)])
             qcb.ax.set_yticks(q_ticks)
             qcb.ax.set_yticklabels(q_ticks, size=8)
             qcb.set_clim(q_clims)
@@ -608,7 +601,7 @@ class DAP_elines(object):
                 (objname, 'SNR (Balmer): {} ({})'.format(
                     self.sn_t, self.sn_t_Ba))))
 
-        if save == False:
+        if not save:
             plt.show()
         else:
             fname = os.path.join(
@@ -619,7 +612,7 @@ class DAP_elines(object):
     def to_BPT(self):
         # convenience method: returns a dict of lines, that you can
         # double-splat into BPT.__init__() below
-        if not 'FLUX' in self.qtype:
+        if 'FLUX' not in self.qtype:
             em = '{} is illegal -- try \'SLFUX\' or \'GFLUX\' (pref)'.format(
                 self.qtype)
             raise ValueError(em)
@@ -630,15 +623,15 @@ class DAP_elines(object):
                  'Hb': self.qty_maps['Hb-----4862'],
                  'OIII': self.qty_maps['OIII---5008'],
                  'NII': self.qty_maps['NII----6585'],
-                 'SII': self.qty_maps['SII----6732'] + \
-                    self.qty_maps['SII----6718'],
+                 'SII': self.qty_maps['SII----6732'] +
+                 self.qty_maps['SII----6718'],
                  'OI': self.qty_maps['OI-----6302'],
                  'qtype': self.qtype}
 
         return ldata
 
     def to_BPT_SNRmask(self):
-        if not 'FLUX' in self.qtype:
+        if 'FLUX' not in self.qtype:
             em = '{} is illegal -- try \'SLFUX\' or \'GFLUX\' (pref)'.format(
                 self.qtype)
             raise ValueError(em)
@@ -656,7 +649,7 @@ class DAP_elines(object):
         return snmask
 
     def species_SNRmask(self):
-        if not 'FLUX' in self.qtype:
+        if 'FLUX' not in self.qtype:
             em = '{} is illegal -- try \'SLFUX\' or \'GFLUX\' (pref)'.format(
                 self.qtype)
             raise ValueError(em)
@@ -673,6 +666,7 @@ class DAP_elines(object):
             'OI_SNRm': self.species_SNR_maps['OI'] > self.sn_t}
 
         return snmask
+
 
 class BPT(object):
     '''
@@ -692,7 +686,6 @@ class BPT(object):
 
     def __init__(self, Ha, Hb, OIII, NII, SII, OI, qtype, Ha_SNRm,
                  Hb_SNRm, OIII_SNRm, NII_SNRm, OI_SNRm, SII_SNRm, **kwargs):
-
         '''
         SF:
             - below and to left of Ka03 in [NII]/Ha vs [OIII]/Hb
@@ -724,7 +717,7 @@ class BPT(object):
 
         self.Ka03_cs = {'NII_Ha': {'u': 0.61, 'v': -0.05, 'w': 1.3, 'l': -.1}}
         self.Ke01_cs = {'SII_Ha': {'u': 0.72, 'v': -0.32, 'w': 1.3, 'l': .1},
-                        'OI_Ha': {'u': 0.73, 'v': 0.59, 'w':1.33, 'l': .3},
+                        'OI_Ha': {'u': 0.73, 'v': 0.59, 'w': 1.33, 'l': .3},
                         'NII_Ha': {'u': 0.61, 'v': -0.47, 'w': 1.19, 'l': 1.7}}
         self.Sf_L_cs = {'SII_Ha': {'m': 1.89, 'b': 0.76},
                         'OI_Ha': {'m': 1.18, 'b': 1.3}}
@@ -734,56 +727,68 @@ class BPT(object):
         # set mask arrays (measurements have to be bad for both to be masked)
 
         self.SII_Ha = np.ma.array(
-            np.log10(SII/Ha),
-            mask=(Ha.mask | SII.mask | (~Ha_SNRm & ~SII_SNRm)))
+            np.log10(SII / Ha),
+            mask=(Ha.mask | SII.mask |
+                  (~Ha_SNRm & ~SII_SNRm)))
         self.NII_Ha = np.ma.array(
-            np.log10(NII/Ha),
-            mask=(Ha.mask | NII.mask | (~Ha_SNRm & ~NII_SNRm)))
+            np.log10(NII / Ha),
+            mask=(Ha.mask | NII.mask |
+                  (~Ha_SNRm & ~NII_SNRm)))
         self.OI_Ha = np.ma.array(
-            np.log10(OI/Ha),
-            mask=(Ha.mask | OI.mask | (~Ha_SNRm)))
+            np.log10(OI / Ha),
+            mask=(Ha.mask | OI.mask |
+                  (~Ha_SNRm)))
         self.OIII_Hb = np.ma.array(
-            np.log10(OIII/Hb),
-            mask=(OIII.mask | Hb.mask | (~Hb_SNRm & ~OIII_SNRm)))
+            np.log10(OIII / Hb),
+            mask=(OIII.mask | Hb.mask |
+                  (~Hb_SNRm & ~OIII_SNRm)))
 
         # compute over NII_Ha first
         SF_NII_Ha = ~self.Ka03_decision(self.NII_Ha, self.OIII_Hb,
                                         **self.Ka03_cs['NII_Ha'])
-        comp_NII_Ha = (self.Ka03_decision(self.NII_Ha, self.OIII_Hb,
-                                          **self.Ka03_cs['NII_Ha'])) * \
-                      (~self.Ke01_decision(self.NII_Ha, self.OIII_Hb,
-                                           **self.Ke01_cs['NII_Ha'])) * \
-                      (self.NII_Ha < 0.25)
+        comp_NII_Ha = (
+            (self.Ka03_decision(
+                self.NII_Ha, self.OIII_Hb, **self.Ka03_cs['NII_Ha']))) & \
+            (~self.Ke01_decision(
+                self.NII_Ha, self.OIII_Hb, **self.Ke01_cs['NII_Ha'])) & \
+            (self.NII_Ha < 0.25)
+
         # "nuclear"-dominated must be neither SF nor composite
         nuc_NII_Ha = ~(SF_NII_Ha | comp_NII_Ha)
         class_NII_Ha = np.argmax(
-            np.stack((np.zeros_like(SF_NII_Ha), SF_NII_Ha, comp_NII_Ha, nuc_NII_Ha, np.zeros_like(SF_NII_Ha))), axis=0)
+            np.stack(
+                (np.zeros_like(SF_NII_Ha), SF_NII_Ha,
+                 comp_NII_Ha, nuc_NII_Ha,
+                 np.zeros_like(SF_NII_Ha))), axis=0)
         self.class_NII_Ha = np.ma.array(
             class_NII_Ha, mask=(self.NII_Ha.mask | self.OIII_Hb.mask))
 
         # compute over SII_Ha
         SF_SII_Ha = ~self.Ke01_decision(self.SII_Ha, self.OIII_Hb,
                                         **self.Ke01_cs['SII_Ha'])
-        AGN_SII_Ha = (self.Ke01_decision(self.SII_Ha, self.OIII_Hb,
-                                        **self.Ke01_cs['SII_Ha'])) & \
-                     (self.AGN_LIER_decision(self.SII_Ha, self.OIII_Hb,
-                                             **self.Sf_L_cs['SII_Ha']))
+        AGN_SII_Ha = (
+            self.Ke01_decision(
+                self.SII_Ha, self.OIII_Hb, **self.Ke01_cs['SII_Ha'])) & \
+            (self.AGN_LIER_decision(
+                self.SII_Ha, self.OIII_Hb, **self.Sf_L_cs['SII_Ha']))
         LIER_SII_Ha = ~(SF_SII_Ha | AGN_SII_Ha)
         class_SII_Ha = np.argmax(
             np.stack((np.zeros_like(SF_SII_Ha), SF_SII_Ha,
-                       np.zeros_like(SF_SII_Ha), AGN_SII_Ha,
+                      np.zeros_like(SF_SII_Ha), AGN_SII_Ha,
                       LIER_SII_Ha)), axis=0)
         self.class_SII_Ha = np.ma.array(
             class_SII_Ha, mask=self.SII_Ha.mask)
 
         # compute over OI_Ha
-        SF_OI_Ha = (~self.Ke01_decision(self.OI_Ha, self.OIII_Hb,
-                                        **self.Ke01_cs['OI_Ha'])) & \
-                   (self.OI_Ha < -.75)
-        AGN_OI_Ha = (self.Ke01_decision(self.OI_Ha, self.OIII_Hb,
-                                       **self.Ke01_cs['OI_Ha'])) & \
-                    (self.AGN_LIER_decision(self.OI_Ha, self.OIII_Hb,
-                                            **self.Sf_L_cs['OI_Ha']))
+        SF_OI_Ha = (
+            ~self.Ke01_decision(
+                self.OI_Ha, self.OIII_Hb, **self.Ke01_cs['OI_Ha'])) & \
+            (self.OI_Ha < -.75)
+        AGN_OI_Ha = (
+            self.Ke01_decision(
+                self.OI_Ha, self.OIII_Hb, **self.Ke01_cs['OI_Ha'])) & \
+            self.AGN_LIER_decision(
+                self.OI_Ha, self.OIII_Hb, **self.Sf_L_cs['OI_Ha'])
         LIER_OI_Ha = ~(SF_OI_Ha | AGN_OI_Ha)
         class_OI_Ha = np.argmax(
             np.stack((np.zeros_like(SF_OI_Ha), SF_OI_Ha,
@@ -792,29 +797,27 @@ class BPT(object):
         self.class_OI_Ha = np.ma.array(
             class_OI_Ha, mask=self.OI_Ha.mask)
 
-        ## decide where everything agrees
+        #  decide where everything agrees
 
         self.SF = np.ma.array(
             SF_NII_Ha * SF_SII_Ha * SF_OI_Ha,
-            mask=(self.SII_Ha.mask | self.NII_Ha.mask | \
+            mask=(self.SII_Ha.mask | self.NII_Ha.mask |
                   self.OI_Ha.mask | self.OIII_Hb.mask))
 
         self.comp = np.ma.array(
             comp_NII_Ha * SF_SII_Ha * SF_OI_Ha,
-            mask=(self.SII_Ha.mask | self.NII_Ha.mask | \
+            mask=(self.SII_Ha.mask | self.NII_Ha.mask |
                   self.OI_Ha.mask | self.OIII_Hb.mask))
 
         self.AGN = np.ma.array(
             nuc_NII_Ha * AGN_SII_Ha * AGN_OI_Ha,
-            mask=(self.SII_Ha.mask | self.NII_Ha.mask | \
+            mask=(self.SII_Ha.mask | self.NII_Ha.mask |
                   self.OI_Ha.mask | self.OIII_Hb.mask))
 
         self.LIER = np.ma.array(
             nuc_NII_Ha * AGN_SII_Ha * AGN_OI_Ha,
-            mask=(self.SII_Ha.mask | self.NII_Ha.mask | \
+            mask=(self.SII_Ha.mask | self.NII_Ha.mask |
                   self.OI_Ha.mask | self.OIII_Hb.mask))
-
-        stack_class = np.stack((self.SF, self.comp, self.AGN, self.LIER))
 
         self.ambig = ~(self.SF | self.comp | self.AGN | self.LIER)
 
@@ -824,7 +827,7 @@ class BPT(object):
             axis=0)
 
         self.diag = np.ma.array(
-            self.diag, mask=(self.SII_Ha.mask | self.NII_Ha.mask | \
+            self.diag, mask=(self.SII_Ha.mask | self.NII_Ha.mask |
                              self.OI_Ha.mask | self.OIII_Hb.mask))
 
         # define color map
@@ -835,27 +838,27 @@ class BPT(object):
         self.norm = colors.BoundaryNorm(self.cmap_bounds, self.cmap.N)
 
     def Ka03_(self, x, u, v, w, l):
-        return u/(x + v) + w
+        return u / (x + v) + w
 
     def Ke01_(self, x, u, v, w, l):
-        return u/(x + v) + w
+        return u / (x + v) + w
 
     def AGN_LIER_(self, x, m, b):
-        return m*x + b
+        return m * x + b
 
     def Ka03_decision(self, x, y, u, v, w, l):
         '''
         y is [OIII]/Hb
         x is [NII]/Ha, [SII]/Ha, or [OI]/Ha
         '''
-        return (y > u/(x + v) + w) | (x > l)
+        return (y > u / (x + v) + w) | (x > l)
 
     def Ke01_decision(self, x, y, u, v, w, l):
         '''
         y is [OIII]/Hb
         x is [NII]/Ha, [SII]/Ha, or [OI]/Ha
         '''
-        return (y > u/(x + v) + w) | (x > l)
+        return (y > u / (x + v) + w) | (x > l)
 
     def AGN_LIER_decision(self, x, y, m, b):
         '''
@@ -891,17 +894,17 @@ class BPT(object):
             NII_ax.scatter(
                 self.NII_Ha[self.class_NII_Ha == i],
                 self.OIII_Hb[self.class_NII_Ha == i],
-                edgecolor='None', facecolor=cs[i], label = ls[i],
+                edgecolor='None', facecolor=cs[i], label=ls[i],
                 marker='.', alpha=0.5)
             SII_ax.scatter(
                 self.SII_Ha[self.class_SII_Ha == i],
                 self.OIII_Hb[self.class_SII_Ha == i],
-                edgecolor='None', facecolor=cs[i], label = ls[i],
+                edgecolor='None', facecolor=cs[i], label=ls[i],
                 marker='.', alpha=0.5)
             OI_ax.scatter(
                 self.OI_Ha[self.class_OI_Ha == i],
                 self.OIII_Hb[self.class_OI_Ha == i],
-                edgecolor='None', facecolor=cs[i], label = ls[i],
+                edgecolor='None', facecolor=cs[i], label=ls[i],
                 marker='.', alpha=0.5)
 
         # set up convenience grids
@@ -939,9 +942,9 @@ class BPT(object):
 
         # plot the Ka03 (pure SF) line on NII axes where it's less than Ka01
         NII_ax.plot(
-            NII_Ha_grid[(Ka03_line_NII < Ke01_line_NII) * \
-                             (NII_Ha_grid < 0.4)],
-            Ka03_line_NII[(Ka03_line_NII < Ke01_line_NII) * \
+            NII_Ha_grid[(Ka03_line_NII < Ke01_line_NII) *
+                        (NII_Ha_grid < 0.4)],
+            Ka03_line_NII[(Ka03_line_NII < Ke01_line_NII) *
                           (NII_Ha_grid < 0.4)],
             linestyle='--', c='k', marker='')
 
@@ -958,14 +961,14 @@ class BPT(object):
         # plot the AGN-LIER line on SII & OI axes where it's more than Ka01\
         SII_ax.plot(
             SII_Ha_grid[(Sf_L_line_SII > Ke01_line_SII) |
-                             (SII_Ha_grid > 0.1)],
+                        (SII_Ha_grid > 0.1)],
             Sf_L_line_SII[(Sf_L_line_SII > Ke01_line_SII) |
                           (SII_Ha_grid > 0.1)],
             linestyle='-.', c='k', marker='')
 
         OI_ax.plot(
             OI_Ha_grid[(Sf_L_line_OI > Ke01_line_OI) |
-                            (OI_Ha_grid > -0.9)],
+                       (OI_Ha_grid > -0.9)],
             Sf_L_line_OI[(Sf_L_line_OI > Ke01_line_OI) |
                          (OI_Ha_grid > -0.9)],
             linestyle='-.', c='k', marker='', label='AGN-LIER')
@@ -986,17 +989,17 @@ class BPT(object):
 
         # make scatter plot axes labels
         NII_ax.set_ylabel(
-            r'$\log{\frac{\mathrm{%s(OIII)}}{\mathrm{%s(H\beta)}}}$' \
-                % (qtype, qtype), size=14)
+            r'$\log{\frac{\mathrm{%s(OIII)}}{\mathrm{%s(H\beta)}}}$' % (
+                qtype, qtype), size=14)
         NII_ax.set_xlabel(
-            r'$\log{\frac{\mathrm{%s(NII)}}{\mathrm{%s(H\alpha)}}}$' \
-                % (qtype, qtype), size=14)
+            r'$\log{\frac{\mathrm{%s(NII)}}{\mathrm{%s(H\alpha)}}}$' % (
+                qtype, qtype), size=14)
         SII_ax.set_xlabel(
-            r'$\log{\frac{\mathrm{%s(SII)}}{\mathrm{%s(H\alpha)}}}$' \
-                % (qtype, qtype), size=14)
+            r'$\log{\frac{\mathrm{%s(SII)}}{\mathrm{%s(H\alpha)}}}$' % (
+                qtype, qtype), size=14)
         OI_ax.set_xlabel(
-            r'$\log{\frac{\mathrm{%s(OI)}}{\mathrm{%s(H\alpha)}}}$' \
-                % (qtype, qtype), size=14)
+            r'$\log{\frac{\mathrm{%s(OI)}}{\mathrm{%s(H\alpha)}}}$' % (
+                qtype, qtype), size=14)
 
         NII_ax.tick_params(axis='both', labelsize=10)
         SII_ax.tick_params(axis='both', labelsize=10)
@@ -1007,16 +1010,15 @@ class BPT(object):
         SII_Ha_map = pywcsgrid2.subplot(235, header=h)
         OI_Ha_map = pywcsgrid2.subplot(236, header=h)
 
-        for ax, t in zip(
-            [NII_Ha_map, SII_Ha_map, OI_Ha_map],
-            ['NII-Ha', 'SII-Ha', 'OI-Ha']):
+        for ax, t in zip([NII_Ha_map, SII_Ha_map, OI_Ha_map],
+                         ['NII-Ha', 'SII-Ha', 'OI-Ha']):
             ax.set_ticklabel_type(
                 'delta',
-                center_pixel=tuple(t/2. for t in self.diag.shape))
+                center_pixel=tuple(t / 2. for t in self.diag.shape))
             ax.axis['bottom'].major_ticklabels.set(fontsize=10)
             ax.axis['left'].major_ticklabels.set(fontsize=10)
             # add beam
-            bs = 2.*u.arcsec/(h['CDELT1'] * h['PC1_1'] * u.deg)
+            bs = 2. * u.arcsec / (h['CDELT1'] * h['PC1_1'] * u.deg)
             ax.add_beam_size(bs, bs, 0., loc=1)
             ax.tick_params(axis='both', colors='w')
             ax.grid()
@@ -1071,7 +1073,7 @@ class BPT(object):
         s = .05
         f_im = gz2.download_sloan_im(
             h['CRVAL1'], h['CRVAL2'], scale=s,
-            width=40./s, height=40./s, verbose=False,)
+            width=40. / s, height=40. / s, verbose=False,)
         f_im_ax.imshow(
             f_im[::-1], extent=[-20., 20., -20., 20.], aspect='equal')
         f_im_ax.tick_params(labelsize=9)
@@ -1085,7 +1087,7 @@ class BPT(object):
 
         plt.suptitle(objname)
 
-        if save == False:
+        if not save:
             plt.show()
         else:
             fname = os.path.join(
@@ -1093,8 +1095,8 @@ class BPT(object):
             plt.savefig(fname)
             return fname
 
-
 ifu_dims = {127: 32., 91: 27., 61: 22., 37: 17., 19: 12., 7: 7.}
+
 
 class deproject(object):
     def __init__(self, hdu, drpall_row, plot=False, verbose=False):
@@ -1103,12 +1105,12 @@ class deproject(object):
         then use a given phi & i to deproject
         '''
 
-        objcoords = coords.SkyCoord(ra=drpall_row['objra']*u.deg,
-                                    dec=drpall_row['objdec']*u.deg,
+        objcoords = coords.SkyCoord(ra=drpall_row['objra'] * u.deg,
+                                    dec=drpall_row['objdec'] * u.deg,
                                     frame='fk5')
 
-        ifucoords = coords.SkyCoord(ra=drpall_row['ifura']*u.deg,
-                                    dec=drpall_row['ifudec']*u.deg,
+        ifucoords = coords.SkyCoord(ra=drpall_row['ifura'] * u.deg,
+                                    dec=drpall_row['ifudec'] * u.deg,
                                     frame='fk5')
 
         ifudesignsize = drpall_row['ifudesignsize']
@@ -1118,11 +1120,11 @@ class deproject(object):
 
         incl = np.arccos(
             np.sqrt(
-                (drpall_row['nsa_ba']**2. - ba_min**2.)/(1 - ba_min**2.)))
-        incl *= 180./np.pi
+                (drpall_row['nsa_ba']**2. - ba_min**2.) / (1 - ba_min**2.)))
+        incl *= 180. / np.pi
 
         phi = drpall_row['nsa_phi']
-        phi, incl = phi*np.pi/180., incl*np.pi/180.
+        phi, incl = phi * np.pi / 180., incl * np.pi / 180.
         ba = drpall_row['nsa_ba']
         Re = drpall_row['nsa_petro_th50_el']
         self.Re = Re
@@ -1130,10 +1132,10 @@ class deproject(object):
         objra = objcoords.ra.deg
         objdec = objcoords.dec.deg
         self.plateifu = drpall_row['plateifu']
-        if verbose == True:
-            print drpall_row['plateifu']
-            print '\t', drpall_row['ifucoords'].to_string()
-            print '\t', 'phi:', phi, '\n\ti:', incl, '\n\tb/a:', ba
+        if verbose:
+            print(drpall_row['plateifu'])
+            print('\t', drpall_row['ifucoords'].to_string())
+            print('\t', 'phi:', phi, '\n\ti:', incl, '\n\tb/a:', ba)
 
         ifura = ifucoords.ra.deg
         ifudec = ifucoords.dec.deg
@@ -1153,13 +1155,13 @@ class deproject(object):
             [[np.cos(phi), -np.sin(phi)],
              [np.sin(phi), np.cos(phi)]])
         rot_m_r = np.linalg.pinv(rot_m)
-        dfromc = ((world - np.array([objra, objdec]))*3600./Re)
+        dfromc = ((world - np.array([objra, objdec])) * 3600. / Re)
 
-        v = 5.*np.array([[0., 0.], [0., 1.]])/3600.
+        v = 5. * np.array([[0., 0.], [0., 1.]]) / 3600.
         maj_a = v.dot(rot_m_r)
         min_a = maj_a.dot(
-            np.array([[np.cos(-np.pi/2), -np.sin(-np.pi/2)],
-                      [np.sin(-np.pi/2), np.cos(-np.pi/2)]]))
+            np.array([[np.cos(-np.pi / 2), -np.sin(-np.pi / 2)],
+                      [np.sin(-np.pi / 2), np.cos(-np.pi / 2)]]))
 
         # make two displacement matrices (both in x and y)
         # first is displacement in direction of maj axis,
@@ -1167,21 +1169,18 @@ class deproject(object):
         # then multiply second by cos(incl) or something
         # sum, and add result in quadrature along axes
         #
-        # see http://math.oregonstate.edu/home/programs/undergrad/CalculusQuestStudyGuides/vcalc/dotprod/dotprod.html
+        # see http://math.oregonstate.edu/home/programs/undergrad/
+        #     CalculusQuestStudyGuides/vcalc/dotprod/dotprod.html
         # where `a` is maj ax or min ax vector
         # and `b` is a generic, single displacement vector.
 
-        d1 = np.inner(maj_a[1], dfromc)/np.linalg.norm(maj_a[1])
-        d1 = (d1/np.linalg.norm(maj_a[1]))[:, :, np.newaxis] * maj_a[1]
-        d2 = np.inner(min_a[1], dfromc)/np.linalg.norm(min_a[1])
-        d2 = (d2/np.linalg.norm(min_a[1]))[:, :, np.newaxis] * min_a[1]
+        d1 = np.inner(maj_a[1], dfromc) / np.linalg.norm(maj_a[1])
+        d1 = (d1 / np.linalg.norm(maj_a[1]))[:, :, np.newaxis] * maj_a[1]
+        d2 = np.inner(min_a[1], dfromc) / np.linalg.norm(min_a[1])
+        d2 = (d2 / np.linalg.norm(min_a[1]))[:, :, np.newaxis] * min_a[1]
         d2 /= (np.cos(incl))
 
         d = np.sqrt(((d1 + d2)**2.).sum(axis=-1))
-
-        a2tv = np.arccos(
-            np.inner(dfromc, maj_a[1])/ \
-                (np.linalg.norm(maj_a[1]) * np.linalg.norm(dfromc, axis=-1)))
 
         self.ifura, self.ifudec = ifura, ifudec
         self.ifu_r = ifu_r
@@ -1204,15 +1203,17 @@ class deproject(object):
 
         ax = plt.subplot(111)
 
-        wn = hn = 2400. # can't go any higher
+        wn = hn = 2400.  # can't go any higher
         s = 0.02
         img = gz2.download_sloan_im(
             ra=self.ifura, dec=self.ifudec, scale=s,
             width=wn, height=hn, verbose=False)
         ax.imshow(
             img[::-1, :],
-            extent=[self.ifura + wn*s/3600./2, self.ifura - wn*s/3600./2,
-                    self.ifudec - hn*s/3600./2, self.ifudec + hn*s/3600./2],
+            extent=[self.ifura + wn * s / 3600. / 2,
+                    self.ifura - wn * s / 3600. / 2,
+                    self.ifudec - hn * s / 3600. / 2,
+                    self.ifudec + hn * s / 3600. / 2],
             interpolation='None', origin='lower')
         ctr = ax.contour(
             self.world[:, :, 0], self.world[:, :, 1],
@@ -1223,7 +1224,7 @@ class deproject(object):
         ax.add_patch(
             patches.RegularPolygon(
                 xy=(self.ifura, self.ifudec), numVertices=6,
-                radius=self.ifu_r, orientation=np.pi/6.,
+                radius=self.ifu_r, orientation=np.pi / 6,
                 edgecolor='purple', facecolor='None'))
         ax.plot(
             self.ifura + self.v[:, 0],
@@ -1234,18 +1235,20 @@ class deproject(object):
             self.ifudec + self.maj_a[:, 1],
             c='r')
         ax.plot(
-            self.ifura + self.min_a[:, 0]*self.ba,
-            self.ifudec + self.min_a[:, 1]*self.ba,
+            self.ifura + self.min_a[:, 0] * self.ba,
+            self.ifudec + self.min_a[:, 1] * self.ba,
             c='c')
         ax.set_aspect('equal')
         plt.tight_layout()
-        if save == True:
+
+        if save:
             fname = os.path.join(
                 loc, '{}_deproject.png'.format(self.plateifu))
             plt.savefig(fname)
             return fname
         else:
             plt.show()
+
 
 def Zdiag_map(hdulist, objname, diag, save=True, loc=''):
     # set up figure
@@ -1274,7 +1277,7 @@ def Zdiag_map(hdulist, objname, diag, save=True, loc=''):
 
     vmin = np.min(d14[~np.isnan(d14)])
     vmax = np.max(d86[~np.isnan(d86)])
-    #print vmin, vmax
+    # print vmin, vmax
 
     Zmap = ax1.imshow(
         med, cmap=Z_cmap, vmin=vmin, vmax=vmax, aspect='equal')
@@ -1283,7 +1286,7 @@ def Zdiag_map(hdulist, objname, diag, save=True, loc=''):
 
     ax1.set_ticklabel_type(
         'delta',
-        center_pixel=tuple(t/2. for t in d14.shape))
+        center_pixel=tuple(t / 2 for t in d14.shape))
     ax1.axis['bottom'].major_ticklabels.set(fontsize=10)
     ax1.axis['left'].major_ticklabels.set(fontsize=10)
     ax1.tick_params(axis='both', colors='w')
@@ -1293,7 +1296,7 @@ def Zdiag_map(hdulist, objname, diag, save=True, loc=''):
 
     ax2.set_ticklabel_type(
         'delta',
-        center_pixel=tuple(t/2. for t in d14.shape))
+        center_pixel=tuple(t / 2 for t in d14.shape))
     ax2.axis['bottom'].major_ticklabels.set(fontsize=10)
     ax2.axis['left'].major_ticklabels.set(fontsize=10)
     ax2.tick_params(axis='both', colors='w')
@@ -1317,10 +1320,11 @@ def Zdiag_map(hdulist, objname, diag, save=True, loc=''):
 
     plt.suptitle(r'{}: {}'.format(objname, diag.replace('_', '\_')))
 
-    if save == True:
+    if save:
         plt.savefig('{}{}-Z-{}.png'.format(loc, objname, diag))
     else:
         plt.show()
+
 
 def calzetti_k(lams, Rv=4.05):
     lams_u = lams / 10000.
@@ -1333,6 +1337,7 @@ def calzetti_k(lams, Rv=4.05):
     k_lam[lams > 6300.] = k_lam_h[lams > 6300.]
 
     return k_lam
+
 
 class gas_surf_dens(object):
     '''
@@ -1356,6 +1361,7 @@ class gas_surf_dens(object):
     also take care to set R_V as your method of fitting and your
         reddening law of choice prescribe
     '''
+
     def __init__(self, hdulist, objname, diag, R_V=3.1, OH_sol=8.69,
                  Z_sol=.0134, ml=False, **kwargs):
 
@@ -1398,19 +1404,19 @@ class gas_surf_dens(object):
         # oxygen abundance, assuming a constant oxygen-to-other-things
         # scaling (O/Z)_sun = (O/Z)_universal
         Z[:3, :, :] = 10.**(self.OH[:3, :, :] - self.OH_sol) * self.Z_sol
-        xi[:3, :, :] = 0.3#10.**(-4.45 + 0.43 * self.OH[:3, :, :])
+        xi[:3, :, :] = 0.3  # 10.**(-4.45 + 0.43 * self.OH[:3, :, :])
         tau_V[:3, :, :] = self.EBV[:3, :, :] / 1.086 * calzetti_k(
             np.array([5500.]), Rv=self.R_V)
         SIGMA_gas[:3, :, :] = 0.2 * \
             (tau_V[:3, :, :] / (xi[:3, :, :] * Z[:3, :, :]))
 
         mask = (
-            (self.EBV[3, :, :].astype(bool)) | \
-            (self.OH[3, :, :].astype(bool)) | \
+            (self.EBV[3, :, :].astype(bool)) |
+            (self.OH[3, :, :].astype(bool)) |
             (self.OH[1, :, :] <= self.OH_halfsol))
         for a in [SIGMA_gas, xi, tau_V, Z]:
             a[3, :, :] = mask
-            #a[3, :, :] = np.zeros_like(a[3, :, :]).astype(bool)
+            # a[3, :, :] = np.zeros_like(a[3, :, :]).astype(bool)
 
         self.SIGMA_gas = SIGMA_gas
         self.Z = Z
@@ -1429,7 +1435,7 @@ class gas_surf_dens(object):
         # oxygen abundance, assuming a constant oxygen-to-other-things
         # scaling (O/Z)_sun = (O/Z)_universal
         Z[:3, :, :] = 10.**(self.OH[:3, :, :] - self.OH_sol) * self.Z_sol
-        xi[:3, :, :] = 0.3#10.**(-4.45 + 0.43 * self.OH[:3, :, :])
+        xi[:3, :, :] = 0.3  # 10.**(-4.45 + 0.43 * self.OH[:3, :, :])
         tau_V[:3, :, :] = self.EBV[:3, :, :] / 1.086 * calzetti_k(
             np.array([5500.]), Rv=self.R_V)
         SIGMA_gas[:3, :, :] = 0.2 * \
@@ -1444,8 +1450,8 @@ class gas_surf_dens(object):
             (tau_V[1, :, :] / (xi[1, :, :] * Z[1, :, :]))
 
         mask = (
-            (self.EBV[3, :, :].astype(bool)) | \
-            (self.OH[3, :, :].astype(bool)) | \
+            (self.EBV[3, :, :].astype(bool)) |
+            (self.OH[3, :, :].astype(bool)) |
             (self.OH[1, :, :] <= self.OH_halfsol))
         for a in [SIGMA_gas, xi, tau_V, Z]:
             a[3, :, :] = mask
@@ -1458,17 +1464,14 @@ class gas_surf_dens(object):
 
     def __repr__(self):
         return 'gas_surf_dens object ({}), {} good spaxels'.format(
-            self.objname, (mask == 0).sum())
+            self.objname, (self.mask == 0).sum())
 
-    def to_kpc(self, dep, re_min_max, ang_scale=0.5*u.arcsec):
+    def to_kpc(self, dep, re_min_max, ang_scale=0.5 * u.arcsec):
 
         from astropy.cosmology import WMAP9 as cosmo
 
         # angular and physical (on-galaxy) spaxel sizes
         # [ang_scale] = arcsec
-        phys_scale = ang_scale / cosmo.arcsec_per_kpc_proper(
-            dep.zdist)
-
         # dep.Re is arcseconds per effective radius along major axis
         ang_min_max = (re_min_max * dep.Re) * u.arcsec
         phys_min_max = ang_min_max / cosmo.arcsec_per_kpc_proper(
@@ -1514,8 +1517,8 @@ class gas_surf_dens(object):
 
         OH_map_cax = fig.add_axes([.05, .465, .4, .035])
 
-        ## start working on Z/xi map axes
-        #set effective lower limit at sol - 0.301 dex (50%)
+        #  start working on Z/xi map axes
+        #  set effective lower limit at sol - 0.301 dex (50%)
         OH_med = np.ma.array(self.OH[1], mask=self.mask)
         OH_clims = np.array([self.OH_halfsol, 9.5])
         if OH_med.min() < OH_clims[0]:
@@ -1546,7 +1549,7 @@ class gas_surf_dens(object):
         # axes for radial SIGMA
         S_R_ax = plt.subplot(gs[-2:, 1])
         S_R_ax.set_ylabel(
-            r'$\log{\frac{\Sigma_{gas}}{\mathrm{M_{\odot}} ' + \
+            r'$\log{\frac{\Sigma_{gas}}{\mathrm{M_{\odot}} ' +
             '\mathrm{pc^{-2}}}}$')
         S_R_ax.set_xlabel(r'$\frac{R}{R_e}$')
         # specify plot bounds, not implemented until later
@@ -1562,15 +1565,15 @@ class gas_surf_dens(object):
 
         r = np.ma.array(
             dep.d,
-            mask=(self.mask | (OH_med < self.OH_halfsol)) ).flatten()
+            mask=(self.mask | (OH_med < self.OH_halfsol))).flatten()
 
-        ## plot radial abundance
+        #  plot radial abundance
         OH_R_ax = S_R_ax.twinx()
         OH = np.ma.array(self.OH[1, :, :], mask=self.mask).flatten()
-        OH16 = np.ma.array(self.OH[0, :, :], mask=self.mask).flatten()
-        OH84 = np.ma.array(self.OH[2, :, :], mask=self.mask).flatten()
-        OH_e = np.ma.abs(np.ma.row_stack([OH16, OH84]) - OH)
-        tau = np.ma.array(self.tau_V[1, :, :], mask=self.mask).flatten()
+        # OH16 = np.ma.array(self.OH[0, :, :], mask=self.mask).flatten()
+        # OH84 = np.ma.array(self.OH[2, :, :], mask=self.mask).flatten()
+        # OH_e = np.ma.abs(np.ma.row_stack([OH16, OH84]) - OH)
+        # tau = np.ma.array(self.tau_V[1, :, :], mask=self.mask).flatten()
 
         OH_R_ax.scatter(
             r, OH,
@@ -1579,33 +1582,35 @@ class gas_surf_dens(object):
         OH_R_ax.set_ylabel(r'$12 + \log{\frac{O}{H}}$', color='g')
         OH_R_ax.tick_params(axis='y', colors='g')
         OH_R_ax.set_xlim([Rmin, Rmax])
-        ## plot radial SIGMA
+
+        #  plot radial SIGMA
         S = np.ma.array(
             self.SIGMA_gas[1, :, :],
-            mask=(self.mask | (OH_med < self.OH_halfsol)) ).flatten()
-        S16 = np.ma.array(
-            self.SIGMA_gas[0, :, :],
-            mask=(self.mask | (OH_med < self.OH_halfsol)) ).flatten()
-        S84 = np.ma.array(
-            self.SIGMA_gas[2, :, :],
-            mask=(self.mask | (OH_med < self.OH_halfsol)) ).flatten()
-        Se = np.ma.abs(np.ma.row_stack([S16, S84]) - S)
+            mask=(self.mask | (OH_med < self.OH_halfsol))).flatten()
+        # S16 = np.ma.array(
+        #     self.SIGMA_gas[0, :, :],
+        #     mask=(self.mask | (OH_med < self.OH_halfsol))).flatten()
+        # S84 = np.ma.array(
+        #     self.SIGMA_gas[2, :, :],
+        #     mask=(self.mask | (OH_med < self.OH_halfsol))).flatten()
+        # Se = np.ma.abs(np.ma.row_stack([S16, S84]) - S)
         S_R_ax.scatter(
             r, np.log10(S),
             marker='.', facecolor='k', edgecolor='None', alpha=0.8)
 
-        ## galaxy image
+        #  galaxy image
         imscale = np.abs(header['CDELT1'] * header['PC1_1'] * 3600.)
         wn = header['NAXIS1']
         hn = header['NAXIS2']
         f = 20
         im = gz2.download_sloan_im(
             ra=header['CRVAL1'], dec=header['CRVAL2'],
-            scale=imscale/f, width=wn*f, height=hn*f, verbose=False)
+            scale=imscale / f, width=wn * f, height=hn * f,
+            verbose=False)
         gal_im_ax.imshow(
             im[::-1, :, :],
-            extent=[- wn*imscale/2., wn*imscale/2.,
-                    - hn*imscale/2., hn*imscale/2.],
+            extent=[-wn * imscale / 2, wn * imscale / 2,
+                    -hn * imscale / 2, hn * imscale / 2],
             aspect='equal', zorder=1)
         gal_im_ax.set_xticks([-10, 0, 10])
         gal_im_ax.set_yticks([-10, 0, 10])
@@ -1613,10 +1618,10 @@ class gas_surf_dens(object):
         gal_im_ax.add_patch(
             patches.RegularPolygon(
                 xy=(0, 0), numVertices=6,
-                radius=dep.ifu_r*3600, orientation=np.pi/6.,
+                radius=dep.ifu_r * 3600, orientation=np.pi / 6,
                 edgecolor='purple', facecolor='None', zorder=3))
 
-        ## SIGMA map axes
+        #  SIGMA map axes
         S_map = S_map_ax.imshow(
             np.log10(
                 np.ma.array(self.SIGMA_gas[1], mask=self.mask)),
@@ -1631,15 +1636,14 @@ class gas_surf_dens(object):
         S_map_cb.locator = S_map_cbar_tick_locator
         S_map_cb.update_ticks()
         S_map_cb.set_label(
-            label=r'$\log{\frac{\Sigma_{gas}}{\mathrm{M_{\odot}} ' + \
-                '\mathrm{pc^{-2}}}}$',
-            size=12)
+            label=r'$\log{\frac{\Sigma_{gas}}{\mathrm{M_{\odot}} \
+                    \mathrm{pc^{-2}}}}$', size=12)
 
         # fix maps axes
         for ax in [OH_map_ax, S_map_ax]:
             ax.set_ticklabel_type(
                 'delta',
-                center_pixel=tuple(t/2. for t in self.OH[1].shape))
+                center_pixel=tuple(t / 2. for t in self.OH[1].shape))
 
             ax.axis['bottom'].major_ticklabels.set(fontsize=10)
             ax.axis['left'].major_ticklabels.set(fontsize=10)
@@ -1649,7 +1653,7 @@ class gas_surf_dens(object):
             ax.set_ylabel('')
             ax.set_aspect('equal')
             ax.add_patch(patches.Rectangle(
-                (-s[0], -s[1]), 2*s[0], 2*s[1],
+                (-s[0], -s[1]), 2 * s[0], 2 * s[1],
                 linewidth=0, fill=None, hatch=' / ', zorder=0))
 
         plt.subplots_adjust(top=0.95, left=.05, hspace=.15, right=0.9)
@@ -1657,7 +1661,7 @@ class gas_surf_dens(object):
         plt.suptitle('{} ({}{})'.format(self.objname, self.diag.replace(
             '_', '\_'), self.mltext))
 
-        if save == True:
+        if save:
             fname = os.path.join(loc, '{}-SIGMA.png'.format(self.objname))
             plt.savefig(fname)
             return fname
@@ -1684,7 +1688,7 @@ class gas_surf_dens(object):
         ax = pywcsgrid2.subplot(gs[0, 0], header=header)
         ax.set_ticklabel_type(
             'delta',
-            center_pixel=tuple(t/2. for t in self.OH[1].shape))
+            center_pixel=tuple(t / 2. for t in self.OH[1].shape))
 
         ax.axis['bottom'].major_ticklabels.set(fontsize=10)
         ax.axis['left'].major_ticklabels.set(fontsize=10)
@@ -1694,7 +1698,7 @@ class gas_surf_dens(object):
         ax.set_ylabel('')
         ax.set_aspect('equal')
         ax.add_patch(patches.Rectangle(
-            (-s[0], -s[1]), 2*s[0], 2*s[1],
+            (-s[0], -s[1]), 2 * s[0], 2 * s[1],
             linewidth=0, fill=None, hatch=' / ', zorder=0))
 
         tau_map_cax = plt.subplot(gs[1, 0])
@@ -1724,11 +1728,11 @@ class gas_surf_dens(object):
 
         ax.set_aspect('equal')
         plt.suptitle(r'{} Extinction ({}{})'.format(
-                self.objname, self.diag.replace('_', '\_'), self.mltext))
+            self.objname, self.diag.replace('_', '\_'), self.mltext))
         plt.subplots_adjust(
             hspace=.3, bottom=.1, top=.95, left=.1, right=.95)
 
-        if save == True:
+        if save:
             fname = os.path.join(loc, '{}-reddening.png'.format(self.objname))
             plt.savefig(fname)
             return fname
@@ -1752,9 +1756,9 @@ class gas_surf_dens(object):
         logS = np.log10(self.SIGMA_gas[:3, :, :])
         dlogS = 0.5 * (logS[2, :, :] - logS[0, :, :])
         mask = self.mask
-        medS = logS[1, :, :]
+        # medS = logS[1, :, :]
         R = np.atleast_2d(dep.d).T
-        nugget = (dlogS/logS)**2.
+        nugget = (dlogS / logS)**2.
 
         gp = gaussian_process.GaussianProcess(
             regr='constant', corr='squared_exponential',
@@ -1763,9 +1767,10 @@ class gas_surf_dens(object):
             np.atleast_2d(dep.d.flatten()[~mask.flatten()]),
             logS.flatten()[~mask.flatten()])
 
-        ests = np.array(
-            [gp.predict(R[R <= max_Re]) for _ in range(N)]) * spaxel_psize/1.0e6
+        ests = (spaxel_psize / 1.0e6) * np.array(
+            [gp.predict(R[R <= max_Re]) for _ in range(N)])
 
+        return ests
 
     def SFR_fig(self, Ha, drpall_row, save=True, loc=''):
         '''
@@ -1812,12 +1817,12 @@ class gas_surf_dens(object):
         gs = gridspec.GridSpec(1, 2, width_ratios=[3, 2])
         SFR_map_ax = pywcsgrid2.subplot(gs[0], header=header)
         SFR_map_ax.add_patch(patches.Rectangle(
-            (-s[0], -s[1]), 2*s[0], 2*s[1],
+            (-s[0], -s[1]), 2 * s[0], 2 * s[1],
             linewidth=0, fill=None, hatch=' / ', zorder=0))
 
         SFR_map_ax.set_ticklabel_type(
             'delta',
-            center_pixel=tuple(t/2. for t in self.sfr.shape))
+            center_pixel=tuple(t / 2. for t in self.sfr.shape))
         SFR_map_ax.axis['bottom'].major_ticklabels.set(fontsize=10)
         SFR_map_ax.axis['left'].major_ticklabels.set(fontsize=10)
         SFR_map_ax.tick_params(axis='both', colors='w')
@@ -1849,7 +1854,7 @@ class gas_surf_dens(object):
         SFR_cb = plt.colorbar(
             SFR_map, orientation='vertical', extend=extend)
         SFR_cb.set_label(
-            r'$\log{\Sigma_{SFR}}$' + \
+            r'$\log{\Sigma_{SFR}}$' +
             r'[{}]'.format(sfr_u.to_string('latex')),
             fontsize=8)
         SFR_cb.ax.tick_params(labelsize=8)
@@ -1858,21 +1863,21 @@ class gas_surf_dens(object):
         SFR_SIGMA_ax = plt.subplot(gs[1])
         S_masked = np.ma.array(
             self.SIGMA_gas[1], mask=self.SIGMA_gas[-1])
-        data  = np.row_stack(
-            [self.SIGMA_gas[1].flatten(), self.sfr.flatten()])
+        data = np.row_stack([self.SIGMA_gas[1].flatten(),
+                             self.sfr.flatten()])
         mask = np.empty_like(data[1], dtype=bool)
-        mask = ((self.SIGMA_gas[-1].flatten().astype(bool)) | \
-                      (data[0] < 10**-0.5) | (data[0] > 10.**5.) | \
-                      (data[1] < 10.**-4) | (data[1] > 10.**3.))
+        mask = ((self.SIGMA_gas[-1].flatten().astype(bool)) |
+                (data[0] < 10**-0.5) | (data[0] > 10.**5.) |
+                (data[1] < 10.**-4) | (data[1] > 10.**3.))
         S_masked = data[0][~mask]
         sfr_masked = data[1][~mask]
 
         SFR_SIGMA_ax.set_xlabel(
             r'$\log{\Sigma_{gas}} [\frac{M_{\odot}}{\mathrm{pc}^{2}}]$',
             size=10)
-        SFR_SIGMA_ax.set_ylabel(r'$\log{\Sigma_{SFR}}$ ' + \
-            r'[{}]'.format(
-            self.sfr_u.to_string('latex')),
+        SFR_SIGMA_ax.set_ylabel(''.join(
+            (r'$\log{\Sigma_{SFR}}$ ',
+             r'[{}]'.format(self.sfr_u.to_string('latex')))),
             size=10)
 
         SFR_SIGMA_ax.scatter(
@@ -1882,23 +1887,27 @@ class gas_surf_dens(object):
             alpha=0.4)
         SFR_SIGMA_ax.tick_params(axis='both', labelsize=8.)
         xll = np.log10(S_masked).min() - .05
-        if xll < -0.5: xll = -0.5
+        if xll < -0.5:
+            xll = -0.5
         xul = np.log10(S_masked).max() + .05
-        if xul > 5: xll = 5
+        if xul > 5:
+            xll = 5
         yll = np.log10(sfr_masked).min() - .05
-        if yll < -4: yll = -4
+        if yll < -4:
+            yll = -4
         yul = np.log10(sfr_masked).max() + .05
-        if yul > 3: yul = 3
+        if yul > 3:
+            yul = 3
 
-        SFR_SIGMA_ax.set_xlim([xll,xul])
-        SFR_SIGMA_ax.set_ylim([yll,yul])
+        SFR_SIGMA_ax.set_xlim([xll, xul])
+        SFR_SIGMA_ax.set_ylim([yll, yul])
 
         plt.tight_layout()
         plt.suptitle(r'{} H$\alpha$ SFR ({}{})'.format(
             self.objname, self.diag.replace('_', '\_'), self.mltext))
         plt.subplots_adjust(top=0.9)
 
-        if save == True:
+        if save:
             fname = os.path.join(loc, '{}-Ha_SFR.png'.format(self.objname))
             plt.savefig(fname)
             return fname
