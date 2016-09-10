@@ -4,27 +4,28 @@ import matplotlib.image as mpimg
 import urllib
 import io
 from scipy.misc import imsave
-from os import system
+import os.system
 import datetime
 
 
 def download_sloan_im(ra, dec, scale, width=256, height=256, verbose=True):
     '''
     ra & dec: sky coords
-    scale: pixel scale (in arcsec) of image (.02 * rPetro is recommended for galaxies)
+    scale: pixel scale (in arcsec) of image
+        (.02 * rPetro is recommended for galaxies)
     '''
 
     plt.ioff()
 
     width, height = int(width), int(height)
 
-    if verbose == True:
-        print 'Requesting image...'
-        print 'RA: {}'.format(ra)
-        print 'DEC: {}'.format(dec)
-        print 'scale: {} arcsec/pix'.format(scale)
-        print 'width: {} pix'.format(width)
-        print 'height: {} pix'.format(height)
+    if verbose:
+        print('Requesting image...')
+        print('RA: {}'.format(ra))
+        print('DEC: {}'.format(dec))
+        print('scale: {} arcsec/pix'.format(scale))
+        print('width: {} pix'.format(width))
+        print('height: {} pix'.format(height))
 
     base_url = \
         'http://skyservice.pha.jhu.edu/DR12/ImgCutout/getjpeg.' + \
@@ -33,8 +34,8 @@ def download_sloan_im(ra, dec, scale, width=256, height=256, verbose=True):
         str(height) + '&scale=' + str(np.round(scale, 3)) + '&ra=' + \
         str(ra) + '&dec=' + str(dec)
 
-    if verbose == True:
-        print im_url
+    if verbose:
+        print(im_url)
 
     im = urllib.urlopen(im_url)
     image_file = io.BytesIO(im.read())
@@ -49,7 +50,8 @@ def example():
     width, height = 256, 256
     img = download_sloan_im(ra, dec, scale, width, height)
     plt.imshow(
-        img, extent=[-width*scale/2., width*scale/2., -height*scale/2., height*scale/2.])
+        img, extent=[-width * scale / 2., width * scale / 2.,
+                     -height * scale / 2., height * scale / 2.])
     plt.show()
 
 
@@ -59,7 +61,7 @@ def save_sloan(ra, dec, scale, width=256, height=256, imname=None,
     save an SDSS thumbnail as an image file
     '''
 
-    if imname == None:
+    if not imname:
         # if there's no name specified, just use the RA and Dec
         imname = str(ra) + '_' + str(dec)
 
@@ -77,9 +79,7 @@ def casjobs_query(query, query_name=None, destination=None):
     # assumes that casjobs.jar is in ~/casjobs, and that CasJobs.config is
     # shipshape (this is done by the shell script in /home/bin)
 
-    base_command = 'casjobs'
-
-    if query_name == None:
+    if not query_name:
         query_name = datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
 
     os.system(

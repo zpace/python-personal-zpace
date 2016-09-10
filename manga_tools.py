@@ -13,7 +13,7 @@ from glob import glob
 from matplotlib import gridspec, colors
 import matplotlib.ticker as mtick
 
-import pywcsgrid2
+import wcsaxes
 import gz2tools as gz2
 import copy
 
@@ -43,7 +43,6 @@ Mgy = u.def_unit(
 def get_drpall_val(fname, qtys, plateifu):
     drpall = table.Table.read(fname)
     obj = drpall[drpall['plateifu'] == plateifu]
-    # print drpall.colnames
     return obj[qtys]
 
 
@@ -165,7 +164,7 @@ def res_over_plate(version, plate='7443', plot=False, **kwargs):
         plt.close('all')
         fig = plt.figure(figsize=(8, 6))
         ax = fig.add_subplot(111)
-        # print p.shape
+
         ax.plot(lp, p[1], color='b', linewidth=3, label=r'50$^{th}$ \%-ile')
         ax.fill_between(lp, p[0], p[2],
                         color='purple', alpha=0.5, linestyle='--',
@@ -1277,7 +1276,7 @@ def Zdiag_map(hdulist, objname, diag, save=True, loc=''):
 
     vmin = np.min(d14[~np.isnan(d14)])
     vmax = np.max(d86[~np.isnan(d86)])
-    # print vmin, vmax
+
 
     Zmap = ax1.imshow(
         med, cmap=Z_cmap, vmin=vmin, vmax=vmax, aspect='equal')
