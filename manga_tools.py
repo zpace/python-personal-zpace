@@ -1104,36 +1104,37 @@ class deproject(object):
         then use a given phi & i to deproject
         '''
 
-        objcoords = coords.SkyCoord(ra=drpall_row['objra'] * u.deg,
-                                    dec=drpall_row['objdec'] * u.deg,
+        objcoords = coords.SkyCoord(ra=drpall_row['objra'][0] * u.deg,
+                                    dec=drpall_row['objdec'][0] * u.deg,
                                     frame='fk5')
 
-        ifucoords = coords.SkyCoord(ra=drpall_row['ifura'] * u.deg,
-                                    dec=drpall_row['ifudec'] * u.deg,
+        ifucoords = coords.SkyCoord(ra=drpall_row['ifura'][0] * u.deg,
+                                    dec=drpall_row['ifudec'][0] * u.deg,
                                     frame='fk5')
 
-        ifudesignsize = drpall_row['ifudesignsize']
+        ifudesignsize = drpall_row['ifudesignsize'][0]
         ifu_r = ifu_dims[ifudesignsize] / 3600. / 2.
 
         ba_min = .13
 
         incl = np.arccos(
             np.sqrt(
-                (drpall_row['nsa_ba']**2. - ba_min**2.) / (1 - ba_min**2.)))
+                (drpall_row['nsa_elpetro_ba'][0]**2. -
+                 ba_min**2.) / (1 - ba_min**2.)))
         incl *= 180. / np.pi
 
-        phi = drpall_row['nsa_phi']
+        phi = drpall_row['nsa_elpetro_phi'][0]
         phi, incl = phi * np.pi / 180., incl * np.pi / 180.
-        ba = drpall_row['nsa_ba']
-        Re = drpall_row['nsa_petro_th50_el']
+        ba = drpall_row['nsa_elpetro_ba'][0]
+        Re = drpall_row['nsa_elpetro_th50_r'][0]
         self.Re = Re
-        self.zdist = drpall_row['nsa_zdist']
+        self.zdist = drpall_row['nsa_zdist'][0]
         objra = objcoords.ra.deg
         objdec = objcoords.dec.deg
-        self.plateifu = drpall_row['plateifu']
+        self.plateifu = drpall_row['plateifu'][0]
         if verbose:
-            print(drpall_row['plateifu'])
-            print('\t', drpall_row['ifucoords'].to_string())
+            print(drpall_row['plateifu'][0])
+            print('\t', drpall_row['ifucoords'][0].to_string())
             print('\t', 'phi:', phi, '\n\ti:', incl, '\n\tb/a:', ba)
 
         ifura = ifucoords.ra.deg
@@ -1149,12 +1150,12 @@ class deproject(object):
         # and then divide by an eff. rad.
         # finally rotate the reference frame to align with major axis
         world = w.wcs_pix2world(im_coords, 0)
-        world = world.reshape(XX.shape[0], -1, 2)
+        world = world.reshape(XX.shape[0], XX.shape[1], 2)
         rot_m = np.array(
             [[np.cos(phi), -np.sin(phi)],
              [np.sin(phi), np.cos(phi)]])
         rot_m_r = np.linalg.pinv(rot_m)
-        dfromc = ((world - np.array([objra, objdec])) * 3600. / Re)
+        dfromc = ((world - np.array([ifura, ifudec])) * 3600. / Re)
 
         v = 5. * np.array([[0., 0.], [0., 1.]]) / 3600.
         maj_a = v.dot(rot_m_r)
