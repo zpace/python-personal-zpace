@@ -244,11 +244,20 @@ def target_data(hdu):
 
     return objra, objdec, cenra, cendec, mangaID
 
+class MaNGA_DNE_Error(Exception):
+    '''
+    generic file access does-not-exist
+    '''
 
-class DAP_IFU_DNE_Error(Exception):
+class IFU_DNE_Error(MaNGA_DNE_Error):
+    '''
+    generic IFU does-not-exist error, for both DRP & DAP
+    '''
+
+class DRP_IFU_DNE_Error(IFU_DNE_Error):
 
     '''
-    DAP IFU does not exist
+    DRP IFU does not exist
     '''
 
     def __init__(self, plate, ifu):
@@ -256,8 +265,25 @@ class DAP_IFU_DNE_Error(Exception):
         self.ifu = ifu
 
     def __str__(self):
-        return 'plateifu {}-{} DNE in the given location!'.format(
+        return 'reduced products for {}-{} DNE in the given location!'.format(
             self.plate, self.ifu)
+
+
+class DAP_IFU_DNE_Error(IFU_DNE_Error):
+
+    '''
+    DAP IFU does not exist
+    '''
+
+    def __init__(self, plate, ifu, kind):
+        self.plate = plate
+        self.ifu = ifu
+        self.kind = kind
+
+    def __str__(self):
+        return 'analyzed products for {}-{} ({}) \
+                DNE in the given location!'.format(
+            self.plate, self.ifu, self.kind)
 
 
 def read_dap_ifu(plate, ifu):
