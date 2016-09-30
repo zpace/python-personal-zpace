@@ -115,10 +115,11 @@ class BrokenPowerLawInitialMassFunction(rv_continuous):
         # choose the function branch
         begin = self.endpoints[:-1]
         end = self.endpoints[1:]
-        x_ = x[..., None]
+        x_ = np.asarray(x)[..., None]
         branch = np.argmax((x_ >= begin) & (x_ < end), axis=-1)
 
-        match = np.array([self._match[b] for b in branch])
+        match = np.array([self._match[b]
+                          for b in np.atleast_1d(np.asarray(branch))])
 
         # and evaluate on that branch
         return (1. / (self.norm * match) *
@@ -134,6 +135,7 @@ class KroupaInitialMassFunction(BrokenPowerLawInitialMassFunction):
 
         super().__init__(bounds=[mlow, mhigh],
                          slopes=[slope_low, slope_mid, slope_high],
+                         breaks=[mbreak1, mbreak2],
                          **kwargs)
 
         self.a = self.mlow = mlow
