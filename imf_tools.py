@@ -6,52 +6,41 @@ import numpy as np
 from scipy.stats import rv_continuous
 import functools
 
-class PowerLawInitialMassFunction(object):
-    """
-    Contains convenience power-law functions
-    """
-    def __init__(self):
-        self.mlow = self.mhigh = self.slope = 0.
+def _plaw_eval(x, slope):
+    '''
+    power law evaluated at x
+    '''
+    return x**slope
 
-    @functools.lru_cache()
-    @property
-    def norm(self):
-        return np.abs(self._plaw_integral_eval(self.mlow, self.slope) -
-                      self._plaw_integral_eval(self.mhigh, self.slope))
-
-    def _plaw_eval(self, x, slope):
-        '''
-        power law evaluated at x
-        '''
-        return x**slope
-
-    def _plaw_integral_eval(self, x, slope):
-        '''
-        indefinite integral of a power law evaluated at x
-        '''
-        return x**(slope + 1) / (slope + 1)
+def _plaw_integral_eval(x, slope):
+    '''
+    indefinite integral of a power law evaluated at x
+    '''
+    return x**(slope + 1) / (slope + 1)
 
 
-class SalpeterInitialMassFunctionRV(PowerLawInitialMassFunction,
-                                    rv_continuous):
+class SalpeterInitialMassFunctionRV(rv_continuous):
     """
     Salpeter Stellar Initial Mass Function random variate
     """
     def __init__(self, mlow=.08, mhigh=150., slope=-2.35, **kwargs):
 
         super().__init__(a=mlow, b=mhigh)
-        super().__init__(**kwargs)
 
         self.a = self.mlow = mlow
         self.b = self.mhigh = mhigh
         self.slope = slope
 
+    @property
+    def norm(self):
+        return (_plaw_integral_eval(self.mhigh, self.slope) -
+                _plaw_integral_eval(self.mlow, self.slope))
+
     def _pdf(self, x):
-        return 1./self.norm * self._plaw_eval(x, self.slope)
+        return 1./self.norm * _plaw_eval(x, self.slope)
 
 
-class BrokenPowerLawInitialMassFunction(PowerLawInitialMassFunction,
-                                        rv_continuous):
+class BrokenPowerLawInitialMassFunction(rv_continuous):
     """
     Broken power-law Initial Mass Function random variate
     """
@@ -72,13 +61,12 @@ class BrokenPowerLawInitialMassFunction(PowerLawInitialMassFunction,
 
         self.a = self.mlow = bounds[0]
         self.b = self.mhigh = bounds[1]
-        self.bounds = bounds
-        self.slopes = slopes
-        self.breaks = breaks
+        self.bounds = np.array(bounds)
+        self.slopes = np.array(slopes)
+        self.breaks = np.array(breaks)
 
-        super().__init__(a=mlow, b=mhigh, **kwargs)
+        super().__init__(a=self.mlow, b=self.mhigh, **kwargs)
 
-    @functools.lru_cache()
     @property
     def _match(self):
         '''
@@ -88,13 +76,13 @@ class BrokenPowerLawInitialMassFunction(PowerLawInitialMassFunction,
         # iterate through each break,
         # and then iterate through each function that hits it
         bk_vals = np.column_stack(
-            [np.array([self._plaw_eval(b, slopes[i]),
-                       self._plaw_eval(b, slopes[i + 1])])
-             for i, b in enumerate(breaks)])
+            [np.array([_plaw_eval(b, self.slopes[i]),
+                       _plaw_eval(b, self.slopes[i + 1])])
+             for i, b in enumerate(self.breaks)])
 
-        bk_ratios = bk_vals[:, 1] / bk_vals[:, 0]
+        bk_ratios = bk_vals[1, :] / bk_vals[0, :]
         bk_ratios = np.insert(arr=bk_ratios, obj=0, values=1.)
-        prod = np.prod(bk_ratios)
+        prod = np.cumprod(bk_ratios, axis=0)
 
         # so if there are three segments (and two breaks)
         # then bk_ratios will have length 3
@@ -102,7 +90,6 @@ class BrokenPowerLawInitialMassFunction(PowerLawInitialMassFunction,
 
         return prod
 
-    @functools.lru_cache()
     @property
     def endpoints(self):
         endpoints = np.concatenate(
@@ -111,16 +98,15 @@ class BrokenPowerLawInitialMassFunction(PowerLawInitialMassFunction,
              np.array([self.bounds[1]])])
         return endpoints
 
-    @functools.lru_cache()
     @property
     def norm(self):
         '''
         integral of entire broken power-law, with component scalings
         '''
 
-        segment_integrals = self.match * np.array(
-            [(self._plaw_integral_eval(self.endpoints[i], s) -
-              self._plaw_integral_eval(self.endpoints[i + 1], s))
+        segment_integrals = self._match * np.array(
+            [(_plaw_integral_eval(self.endpoints[i + 1], s) -
+              _plaw_integral_eval(self.endpoints[i], s))
              for i, s in enumerate(self.slopes)])
 
         return segment_integrals.sum()
@@ -129,18 +115,21 @@ class BrokenPowerLawInitialMassFunction(PowerLawInitialMassFunction,
         # choose the function branch
         begin = self.endpoints[:-1]
         end = self.endpoints[1:]
-        branch = np.where(((x >= begin) & (x < end)) == True)[0]
+        x_ = x[..., None]
+        branch = np.argmax((x_ >= begin) & (x_ < end), axis=-1)
+
+        match = np.array([self._match[b] for b in branch])
 
         # and evaluate on that branch
-        return (self._match[branch] / self.norm *
-                self._plaw_eval(x, self.slopes[branch]))
+        return (1. / (self.norm * match) *
+                _plaw_eval(x, self.slopes[branch]))
 
 
 class KroupaInitialMassFunction(BrokenPowerLawInitialMassFunction):
     """
     Kroupa (broken power-law) Initial Mass Function random variate
     """
-    def __init__(self, mlow=.08, mhigh=150., mbreak1=.08, mbreak2=.5
+    def __init__(self, mlow=.08, mhigh=150., mbreak1=.08, mbreak2=.5,
                  slope_low=-.03, slope_mid=-1.3, slope_high=-2.3, **kwargs):
 
         super().__init__(bounds=[mlow, mhigh],
