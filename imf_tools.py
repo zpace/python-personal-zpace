@@ -67,14 +67,17 @@ class BrokenPowerLawInitialMassFunction(rv_continuous):
 
         super().__init__(a=self.mlow, b=self.mhigh, **kwargs)
 
-    @property
+        self.match = self._match()
+        self.endpoints = self._endpoints()
+        self.norm = self._norm()
+
     def _match(self):
         '''
         How to scale each power-law segment to maintain continuity
         '''
         # start off by evaluating each power-law at each appropriate break
         # iterate through each break,
-        # and then iterate through each function that hits it
+        # and then use both functions that hit it
         bk_vals = np.column_stack(
             [np.array([_plaw_eval(b, self.slopes[i]),
                        _plaw_eval(b, self.slopes[i + 1])])
@@ -90,21 +93,19 @@ class BrokenPowerLawInitialMassFunction(rv_continuous):
 
         return prod
 
-    @property
-    def endpoints(self):
+    def _endpoints(self):
         endpoints = np.concatenate(
             [np.array([self.bounds[0]]),
              self.breaks,
              np.array([self.bounds[1]])])
         return endpoints
 
-    @property
-    def norm(self):
+    def _norm(self):
         '''
         integral of entire broken power-law, with component scalings
         '''
 
-        segment_integrals = self._match * np.array(
+        segment_integrals = self.match * np.array(
             [(_plaw_integral_eval(self.endpoints[i + 1], s) -
               _plaw_integral_eval(self.endpoints[i], s))
              for i, s in enumerate(self.slopes)])
@@ -118,11 +119,11 @@ class BrokenPowerLawInitialMassFunction(rv_continuous):
         x_ = np.asarray(x)[..., None]
         branch = np.argmax((x_ >= begin) & (x_ < end), axis=-1)
 
-        match = np.array([self._match[b]
+        match = np.array([self.match[b]
                           for b in np.atleast_1d(np.asarray(branch))])
 
         # and evaluate on that branch
-        return (1. / (self.norm * match) *
+        return (match / (self.norm) *
                 _plaw_eval(x, self.slopes[branch]))
 
 
@@ -145,3 +146,11 @@ class KroupaInitialMassFunction(BrokenPowerLawInitialMassFunction):
         self.slope_low = slope_low
         self.slope_mid = slope_mid
         self.slope_high = slope_high
+
+
+class ChabrierInitialMassFunction(rv_continuous):
+    """
+    Chabrier Initial Mass Function Random Variate
+    """
+    def __init__(self, mlow=.08, mhigh=150, mbreak=1., sig=):
+        super().__init__(a=mlow, b=mhigh)
