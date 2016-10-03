@@ -6,6 +6,7 @@ import numpy as np
 
 from astropy import units as u, constants as c
 
+
 def D4000_index(l, s):
     '''
     compute D4000 index
@@ -19,9 +20,10 @@ def D4000_index(l, s):
     red = [4100., 4200.]
 
     blueflux = (s[(l > blue[0]) * (l < blue[-1])]).sum()
-    redflux = (s[(l > blue[0]) * (l < blue[-1])]).sum()
+    redflux = (s[(l > red[0]) * (l < red[-1])]).sum()
 
     return redflux / blueflux
+
 
 def HdA_index(l, s):
     '''
@@ -46,8 +48,9 @@ def HdA_index(l, s):
             s[(l > red[0]) * (l < red[-1])],
             s[(l > blue[0]) * (l < blue[-1])]).mean()
 
-    EW = (1. - s[(l > line[0]) * (l < line[-1])]/F_c) * dl
+    EW = (1. - s[(l > line[0]) * (l < line[-1])] / F_c) * dl
     return EW
+
 
 def shift_to_rest_roll(v, dlogl=None):
     '''
@@ -56,14 +59,20 @@ def shift_to_rest_roll(v, dlogl=None):
     if dlogl is None:
         dlogl = np.round(np.mean(logl[1:] - logl[:-1]), 8)
 
-    z = (v/c.c).to('').value
-    npix = -int(np.rint(z/dlogl))
+    z = (v / c.c).to('').value
+    npix = -int(np.rint(z / dlogl))
     return npix
+
 
 def shift_to_rest(logl, v):
     '''
     apply a constant velocity offset to a log-wavelength grid
     (i.e., DE-redshift the grid)
     '''
-    z = (v/c.c).to('').value
+    z = (v / c.c).to('').value
     return logl - z
+
+
+def determine_dlogl(logl):
+    dlogl = np.round(np.mean(logl[1:] - logl[:-1]), 8)
+    return dlogl
