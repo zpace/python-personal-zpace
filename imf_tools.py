@@ -152,5 +152,5 @@ class ChabrierInitialMassFunction(rv_continuous):
     """
     Chabrier Initial Mass Function Random Variate
     """
-    def __init__(self, mlow=.08, mhigh=150, mbreak=1., sig=):
+    def __init__(self, mlow=.08, mhigh=150, mbreak=1., sig=.1):
         super().__init__(a=mlow, b=mhigh)
