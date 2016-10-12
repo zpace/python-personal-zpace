@@ -144,6 +144,8 @@ def vac2air(l):
     (http://classic.sdss.org/dr7/products/spectra/vacwavelength.html)
     '''
 
+    l = l.to('AA').value
+
     air_l = l / (1.0 + 2.735182E-4 + 131.4182 / l**2. + 2.76249E8 / l**4.)
 
     return air_l
