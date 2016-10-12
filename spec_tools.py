@@ -134,4 +134,16 @@ def air2vac(l):
     n = 1. + .000065328 + .0294981 / (146. - sigma2) + (.0002554 / (41. - sigma2))
     vac_l = l * n
 
-    return
+    return vac_l
+
+def vac2air(l):
+    '''
+    calculate air wavelengths, from vacuum wavelengths
+
+    based on SDSS routine
+    (http://classic.sdss.org/dr7/products/spectra/vacwavelength.html)
+    '''
+
+    air_l = l / (1.0 + 2.735182E-4 + 131.4182 / l**2. + 2.76249E8 / l**4.)
+
+    return air_l
