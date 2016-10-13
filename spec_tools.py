@@ -7,7 +7,7 @@ import numpy as np
 from astropy import units as u, constants as c
 
 
-def Dn4000_index(l, s):
+def D4000_index(l, s):
     '''
     compute D4000 index
 
@@ -32,7 +32,7 @@ def Dn4000_index(l, s):
     return fred / fblue
 
 
-def Hdelta_A_index(l, s, dl=None):
+def Hdelta_A_index(l, s):
     '''
     compute HdA index
 
@@ -43,8 +43,7 @@ def Hdelta_A_index(l, s, dl=None):
      - s: spectrum [flux or flux density units], length n
     '''
 
-    if dl is None:
-        dl = determine_dl(l)
+    dl = determine_dl(l)
 
     blue = [4041.600, 4079.750]
     red = [4128.500, 4161.000]
@@ -134,7 +133,7 @@ def air2vac(l):
     n = 1. + .000065328 + .0294981 / (146. - sigma2) + (.0002554 / (41. - sigma2))
     vac_l = l * n
 
-    return vac_l
+    return vac_l * u.AA
 
 def vac2air(l):
     '''
@@ -148,4 +147,4 @@ def vac2air(l):
 
     air_l = l / (1.0 + 2.735182E-4 + 131.4182 / l**2. + 2.76249E8 / l**4.)
 
-    return air_l
+    return air_l * u.AA
