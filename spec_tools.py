@@ -7,7 +7,7 @@ import numpy as np
 from astropy import units as u, constants as c
 
 
-def D4000_index(l, s):
+def Dn4000_index(l, s):
     '''
     compute D4000 index
 
@@ -120,18 +120,24 @@ def cube2rss(a, axis=0):
     a = np.row_stack([a_.reshape((-1, ) + (a_.shape[axis], )).T for a_ in a])
     return a
 
-def air2vac(l):
+def air2vac(l, unit=None):
     '''
     calculate vacuum wavelengths, from air wavelengths
 
-    based on Pat Hall's IRAF routine `wcalc`
+    based on airtovac (NASA IDLAstro)
     '''
+
+    if unit is not None:
+        l = l * u.Unit(unit)
 
     l = l.to('AA').value
 
-    sigma2 = (1.0e8) / l**2.
+    sigma2 = (1.0e4 / l)**2.
     n = 1. + .000065328 + .0294981 / (146. - sigma2) + (.0002554 / (41. - sigma2))
     vac_l = l * n
+
+    # f = 1. + 5.792105e-2 / (238.0185 - sigma2) + 1.67917e-3 / (57.362 - sigma2)
+    # vac_l = f * n
 
     return vac_l * u.AA
 

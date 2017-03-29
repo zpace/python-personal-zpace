@@ -15,7 +15,6 @@ from glob import glob
 from matplotlib import gridspec, colors
 import matplotlib.ticker as mtick
 
-import wcsaxes
 import gz2tools as gz2
 import copy
 
@@ -180,6 +179,7 @@ def load_drpall(mpl_v, index=None):
     return tab
 
 def load_drp_logcube(plate, ifu, mpl_v):
+    plate, ifu = str(plate), str(ifu)
     fname = os.path.join(
         mangarc.manga_data_loc[mpl_v], 'drp/', plate, 'stack/',
         '-'.join(('manga', plate, ifu, 'LOGCUBE.fits.gz')))
@@ -192,6 +192,7 @@ def load_drp_logcube(plate, ifu, mpl_v):
     return hdulist
 
 def load_dap_maps(plate, ifu, mpl_v, kind):
+    plate, ifu = str(plate), str(ifu)
     fname = os.path.join(
         mangarc.manga_data_loc[mpl_v], 'dap/', kind, plate, ifu,
         '-'.join(('manga', plate, ifu, 'MAPS',
