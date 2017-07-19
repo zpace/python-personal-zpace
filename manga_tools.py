@@ -185,11 +185,14 @@ def load_drp_logcube(plate, ifu, mpl_v):
         '-'.join(('manga', plate, ifu, 'LOGCUBE.fits.gz')))
 
     if not os.path.isfile(fname):
-        raise m.DAP_IFU_DNE_Error(plate, ifu, kind)
+        raise DAP_IFU_DNE_Error(plate, ifu, kind)
 
     hdulist = fits.open(fname)
 
     return hdulist
+
+def hdu_data_extract(hdulist, names):
+    return [hdulist[n].data for n in names]
 
 def load_dap_maps(plate, ifu, mpl_v, kind):
     plate, ifu = str(plate), str(ifu)
