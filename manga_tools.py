@@ -30,7 +30,8 @@ pw_loc = drpall_loc + '.saspwd'
 
 uwdata_loc = '/d/www/karben4/'
 
-MPL_versions = {'MPL-3': 'v1_3_3', 'MPL-4': 'v1_5_1', 'MPL-5': 'v2_0_1'}
+MPL_versions = {'MPL-3': 'v1_3_3', 'MPL-4': 'v1_5_1', 'MPL-5': 'v2_0_1',
+                'MPL-6': 'v2_3_1'}
 
 base_url = 'dtn01.sdss.org/sas/'
 mangaspec_base_url = base_url + 'mangawork/manga/spectro/redux/'
@@ -190,6 +191,22 @@ def load_drp_logcube(plate, ifu, mpl_v):
     hdulist = fits.open(fname)
 
     return hdulist
+
+def get_gal_bpfluxes(plate, ifu, mpl_v, bs, th=5.):
+    hdulist = load_drp_logcube(plate, ifu, mpl_v)
+    snr = np.median(
+        hdulist['FLUX'].data * np.sqrt(hdulist['IVAR'].data), axis=0)
+    fluxes = np.column_stack(
+        [hdulist['{}IMG'.format(band.upper())].data[(snr >= th)]
+        for band in bs])
+    hdulist.close()
+    return fluxes
+
+def get_drp_hdrval(plate, ifu, mpl_v, k):
+    hdulist = load_drp_logcube(plate, ifu, mpl_v)
+    val = hdulist[0].header[k]
+    hdulist.close()
+    return val
 
 def hdu_data_extract(hdulist, names):
     return [hdulist[n].data for n in names]
